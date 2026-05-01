@@ -1,0 +1,15 @@
+# 本地 API 密钥（勿提交）
+.env
+.env.local
+
+# 个人札记（可复制 local_extensions.example.json 为 local_extensions.json）
+personality_encoder/local_extensions.json
+
+# 依赖与缓存
+node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# 本地杂项资料（含聊天记录导出等，勿进仓库）
+zl/

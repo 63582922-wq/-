@@ -546,7 +546,7 @@ export default function App() {
                     <LogicSummary p={msg.payload} />
                   </div>
                   <div className="result-section">
-                    <div className="result-section-title">性格分析（大模型）</div>
+                    <div className="result-section-title">性格分析</div>
                     {msg.error && msg.payload.personality_synthesis ? (
                       <>
                         <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
@@ -554,12 +554,6 @@ export default function App() {
                         </p>
                         <div className="report-flow">{msg.payload.personality_synthesis}</div>
                       </>
-                    ) : null}
-                    {!msg.error && msg.replySource === "model" && msg.generationMeta ? (
-                      <p className="generation-meta">
-                        模型已响应 · 约 {msg.generationMeta.elapsed_seconds} 秒 ·{" "}
-                        {msg.generationMeta.model} · {msg.generationMeta.api_host}
-                      </p>
                     ) : null}
                     {!msg.error && msg.replySource !== "model" && String(msg.content ?? "").trim() ? (
                       <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>

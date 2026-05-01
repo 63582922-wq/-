@@ -1,24 +1,30 @@
 :root {
+  /* 衬线体 + 斜体（常见说法里的「斜衬线」风格）；中文用宋体/思源宋体系 */
   --font:
-    "PingFang SC",
-    "Hiragino Sans GB",
-    "Microsoft YaHei",
-    system-ui,
-    sans-serif;
-  /* 深色单色系：避免多块高饱和色 */
-  --bg-root: #090b0f;
-  --bg-shell: #0c0f14;
-  --bg-raised: #13171f;
-  --bg-input: #151922;
-  --border: rgba(255, 255, 255, 0.06);
-  --border-hover: rgba(255, 255, 255, 0.1);
-  --text: #e4e6ea;
-  --text-secondary: rgba(228, 230, 234, 0.62);
-  --text-tertiary: rgba(228, 230, 234, 0.42);
-  --accent: #c5cbd6;
-  --accent-fg: #0a0c10;
-  --danger: rgba(232, 160, 160, 0.85);
-  --warn: rgba(212, 196, 160, 0.85);
+    ui-serif,
+    "Songti SC",
+    "STSong",
+    "Noto Serif SC",
+    "Source Han Serif SC",
+    Georgia,
+    "Times New Roman",
+    "Palatino Linotype",
+    Palatino,
+    serif;
+  /* 纯黑底 + 黑白灰层级，无彩色 */
+  --bg-root: #000000;
+  --bg-shell: #000000;
+  --bg-raised: #141414;
+  --bg-input: #0a0a0a;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.16);
+  --text: #f2f2f2;
+  --text-secondary: rgba(255, 255, 255, 0.62);
+  --text-tertiary: rgba(255, 255, 255, 0.38);
+  --accent: #ffffff;
+  --accent-fg: #000000;
+  --danger: rgba(255, 255, 255, 0.78);
+  --warn: rgba(255, 255, 255, 0.52);
   --radius-sm: 8px;
   --radius-md: 10px;
   --radius-lg: 12px;
@@ -28,10 +34,12 @@
   --app-pad-bottom: max(10px, env(safe-area-inset-bottom, 0px));
 
   font-family: var(--font);
+  font-style: italic;
   line-height: 1.5;
   font-weight: 400;
   color: var(--text);
-  background-color: var(--bg-root);
+  /* 与主壳同色，避免窄栏两侧或底部露出更深底色 */
+  background-color: var(--bg-shell);
 }
 
 *,
@@ -44,16 +52,35 @@ html {
   -webkit-text-size-adjust: 100%;
   height: 100%;
   height: 100dvh;
+  background: var(--bg-shell);
 }
 
 body {
   margin: 0;
-  height: 100%;
-  height: 100dvh;
-  background: var(--bg-root);
+  min-height: 100%;
+  min-height: 100dvh;
+  background: var(--bg-shell);
   color: var(--text);
   -webkit-tap-highlight-color: transparent;
   overflow: hidden;
+}
+
+/* 系统控件默认会换成无衬线正体，强制继承全页衬线斜体 */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-style: inherit;
+}
+
+code,
+pre,
+kbd,
+samp,
+.app-triangle-pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+  font-style: normal;
 }
 
 #root {
@@ -145,7 +172,7 @@ a:hover {
 }
 
 .app-bubble--error {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
 .app-bubble--pending {
@@ -185,28 +212,39 @@ a:hover {
   color: var(--warn);
 }
 
-.block-ai {
-  margin-bottom: 14px;
-  padding: 14px 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  background: var(--bg-root);
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+@keyframes ai-loading-breathe {
+  0%,
+  100% {
+    opacity: 0.38;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.ai-loading-breathe {
+  animation: ai-loading-breathe 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-loading-breathe {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* 气泡内长文：不再套第二层带边框色块，仅占位与行距 */
+.report-flow {
+  margin: 0 0 14px;
   font-size: 15px;
-  line-height: 1.65;
+  line-height: 1.72;
   white-space: pre-wrap;
-}
-
-.block-ai-title {
-  font-weight: 600;
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-  margin-bottom: 10px;
-}
-
-.full-ai-report {
-  margin-bottom: 14px;
+  color: var(--text);
 }
 
 .full-ai-appendix {
@@ -346,18 +384,6 @@ a:hover {
   line-height: 1.55;
 }
 
-.block-report {
-  margin-top: 8px;
-  margin-bottom: 12px;
-  padding: 14px 16px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-root);
-  font-size: 14px;
-  white-space: pre-wrap;
-  line-height: 1.55;
-  color: var(--text-secondary);
-}
 
 .app-triangle-pre {
   margin: 8px 0 0;
@@ -419,7 +445,7 @@ a:hover {
   flex-shrink: 0;
   padding-top: 12px;
   padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
-  background: var(--bg-shell);
+  background: transparent;
   border-top: 1px solid var(--border);
 }
 
@@ -524,6 +550,8 @@ a:hover {
   border: 1px solid var(--border-hover);
   background: var(--accent);
   color: var(--accent-fg);
+  font-family: inherit;
+  font-style: inherit;
   font-weight: 600;
   font-size: 14px;
   cursor: pointer;
@@ -669,6 +697,7 @@ a:hover {
   cursor: pointer;
   touch-action: manipulation;
   font-family: inherit;
+  font-style: inherit;
   line-height: 1.45;
 }
 
@@ -770,6 +799,7 @@ a:hover {
   font-size: 14px;
   font-weight: 600;
   font-family: inherit;
+  font-style: inherit;
   cursor: pointer;
   touch-action: manipulation;
   border: 1px solid var(--border);

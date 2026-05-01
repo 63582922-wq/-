@@ -50,8 +50,8 @@ type ChatMessage = {
     | "local_compute"
     | "local_result"
     | "ai_loading"
-    | "ai_done"
-    | "ai_failed";
+    /** 本地 + 大模型合并为一条气泡，减少层级嵌套 */
+    | "combined_report";
   payload?: AgentPayload;
   error?: string;
   /** 模型失败但仍有本地正文时由服务端下发 */
@@ -280,15 +280,14 @@ function StructuredAppendix({
   return (
     <div className="structured-appendix">
       {!omitLogicSummary ? <LogicSummary p={p} /> : null}
-      {p.algorithm_note && (
-        <details className="app-details">
-          <summary>推演规则摘要</summary>
-          <div className="details-body">{p.algorithm_note}</div>
-        </details>
-      )}
       <details className="app-details">
-        <summary>三角形结构 · JSON</summary>
+        <summary>规则说明与三角形数据</summary>
         <div className="details-body">
+          {p.algorithm_note ? (
+            <div className="note-muted" style={{ marginBottom: 12 }}>
+              {p.algorithm_note}
+            </div>
+          ) : null}
           <TriangleCard tri={p.triangle} />
         </div>
       </details>
@@ -314,7 +313,7 @@ function StructuredAppendix({
         <details className="app-details" style={{ marginTop: 12 }}>
           <summary>讲义模版全文（对照）</summary>
           <div className="details-body">
-            <div className="block-report">{p.personality_synthesis}</div>
+            <div className="report-flow">{p.personality_synthesis}</div>
           </div>
         </details>
       ) : null}
@@ -337,8 +336,8 @@ export default function App() {
       role: "assistant",
       content:
         "你好。请先选择阴历生日并确认，或在右侧输入阳历日期（如 1994-01-15、1994/3/8），再点「发送」。\n\n"
-        + "你会依次看到两段回复：① 本地推算摘要（秒出）；② 大模型根据该摘要撰写的性格分析报告（通常十余秒至一分钟）。\n\n"
-        + "附录里可展开查看三角形与讲义摘录。内容为性格隐喻参考，非心理咨询诊断。",
+        + "发送后会在同一条回复里先后完成：先显示推算摘要，再在同一气泡内接上模型解读（中间可能有十余秒等待）。\n\n"
+        + "底部一处「讲义摘录与技术明细」可展开查看详情。内容为性格隐喻参考，非心理咨询诊断。",
     },
   ]);
   const [input, setInput] = useState("");
@@ -426,7 +425,7 @@ export default function App() {
         {
           role: "assistant",
           content:
-            "第二步：正在请求大模型根据上述推演撰写性格分析报告（通常需十余秒至一分钟）…",
+            "分析生成中。。。。",
           loading: true,
           step: "ai_loading",
         },
@@ -435,24 +434,57 @@ export default function App() {
       const reply = await sendChat(text, iso);
       setMessages((prev) => {
         const rest = stripLoading(prev);
-        const merged: ChatMessage = {
-          ...reply,
-          payload: reply.payload ?? localPayload,
-          step: reply.error ? "ai_failed" : "ai_done",
-        };
-        return [...rest, merged];
+        const tail = rest[rest.length - 1];
+        const head = rest.slice(0, -1);
+        if (tail?.step === "local_result" && tail.payload) {
+          const merged: ChatMessage = {
+            role: "assistant",
+            step: "combined_report",
+            payload: tail.payload,
+            content: reply.content,
+            error: reply.error,
+            modelWarning: reply.modelWarning,
+            replySource: reply.replySource,
+            generationMeta: reply.generationMeta,
+          };
+          return [...head, merged];
+        }
+        return [
+          ...rest,
+          {
+            ...reply,
+            payload: reply.payload ?? localPayload,
+            step: "combined_report",
+          },
+        ];
       });
     } catch {
-      setMessages((prev) => [
-        ...stripLoading(prev),
-        {
-          role: "assistant",
-          content: "",
-          error: "网络不畅，请稍后重试。",
-          payload: localPayload,
-          step: "ai_failed",
-        },
-      ]);
+      setMessages((prev) => {
+        const rest = stripLoading(prev);
+        const tail = rest[rest.length - 1];
+        const head = rest.slice(0, -1);
+        if (tail?.step === "local_result" && tail.payload) {
+          return [
+            ...head,
+            {
+              role: "assistant",
+              step: "combined_report",
+              payload: tail.payload,
+              content: "",
+              error: "网络不畅，请稍后重试。",
+            },
+          ];
+        }
+        return [
+          ...rest,
+          {
+            role: "assistant",
+            content: "",
+            error: "网络不畅，请稍后重试。",
+            payload: localPayload,
+          },
+        ];
+      });
     } finally {
       setBusy(false);
     }
@@ -479,19 +511,26 @@ export default function App() {
           >
             <div className={bubbleClass(msg)}>
               {msg.role === "assistant" && msg.loading ? (
-                <p className="text-secondary" style={{ margin: 0 }}>
+                <p
+                  className={
+                    msg.step === "ai_loading"
+                      ? "text-secondary ai-loading-breathe"
+                      : "text-secondary"
+                  }
+                  style={{ margin: 0 }}
+                >
                   {msg.content}
                 </p>
               ) : null}
-              {msg.role === "assistant" && !msg.loading && msg.error && (
+              {msg.role === "assistant" && !msg.loading && msg.error && msg.step !== "combined_report" ? (
                 <p className="text-error">{msg.error}</p>
-              )}
+              ) : null}
               {msg.role === "assistant" && !msg.loading && msg.step === "local_result" && msg.payload ? (
                 <>
-                  <p className="reply-provenance">一、本地推算摘要</p>
+                  <p className="reply-provenance">推算摘要（完成后会与模型解读合并为一条）</p>
                   <LogicSummary p={msg.payload} />
                   <details className="app-details full-ai-appendix" defaultOpen={false}>
-                    <summary>附录 · 推演明细与讲义摘录</summary>
+                    <summary>讲义摘录与技术明细</summary>
                     <div className="details-body">
                       <StructuredAppendix p={msg.payload} />
                     </div>
@@ -499,49 +538,53 @@ export default function App() {
                   <p className="disclaimer">{msg.payload.disclaimer}</p>
                 </>
               ) : null}
-              {msg.role === "assistant" &&
-              !msg.loading &&
-              msg.payload &&
-              (msg.step === "ai_done" || msg.step === "ai_failed") ? (
+              {msg.role === "assistant" && !msg.loading && msg.step === "combined_report" && msg.payload ? (
                 <>
-                  <p className="reply-provenance">二、性格分析报告（大模型）</p>
-                  {msg.error && msg.payload.personality_synthesis ? (
-                    <>
-                      <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
-                        本轮大模型未返回正文。以下为<strong>本地讲义整合</strong>（模版拼装，仅供对照）。
+                  {msg.error ? <p className="text-error">{msg.error}</p> : null}
+                  <div className="result-section">
+                    <div className="result-section-title">推算摘要</div>
+                    <LogicSummary p={msg.payload} />
+                  </div>
+                  <div className="result-section">
+                    <div className="result-section-title">性格分析（大模型）</div>
+                    {msg.error && msg.payload.personality_synthesis ? (
+                      <>
+                        <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
+                          本轮大模型未返回正文。以下为<strong>本地讲义整合</strong>（模版拼装，仅供对照）。
+                        </p>
+                        <div className="report-flow">{msg.payload.personality_synthesis}</div>
+                      </>
+                    ) : null}
+                    {!msg.error && msg.replySource === "model" && msg.generationMeta ? (
+                      <p className="generation-meta">
+                        模型已响应 · 约 {msg.generationMeta.elapsed_seconds} 秒 ·{" "}
+                        {msg.generationMeta.model} · {msg.generationMeta.api_host}
                       </p>
-                      <div className="block-ai full-ai-report">{msg.payload.personality_synthesis}</div>
-                    </>
-                  ) : null}
-                  {!msg.error && msg.replySource === "model" && msg.generationMeta ? (
-                    <p className="generation-meta">
-                      模型已响应 · 约 {msg.generationMeta.elapsed_seconds} 秒 ·{" "}
-                      {msg.generationMeta.model} · {msg.generationMeta.api_host}
-                    </p>
-                  ) : null}
-                  {!msg.error && msg.replySource !== "model" && String(msg.content ?? "").trim() ? (
-                    <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
-                      正文已显示；若缺少耗时与型号信息，多为后端未重启或仍在旧进程。
-                    </p>
-                  ) : null}
-                  {!msg.error && msg.modelWarning ? (
-                    <p className="text-warn" style={{ marginTop: 0 }}>
-                      {msg.modelWarning}
-                    </p>
-                  ) : null}
-                  {!msg.error && msg.content ? (
-                    <div className="block-ai full-ai-report">{msg.content}</div>
-                  ) : null}
-                  {!msg.error && !msg.content ? (
-                    <p className="text-error" style={{ marginTop: 0 }}>
-                      未收到模型正文。请查看上方报错或附录中的讲义摘录。
-                    </p>
-                  ) : null}
+                    ) : null}
+                    {!msg.error && msg.replySource !== "model" && String(msg.content ?? "").trim() ? (
+                      <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
+                        正文已显示；若缺少耗时与型号信息，多为后端未重启或仍在旧进程。
+                      </p>
+                    ) : null}
+                    {!msg.error && msg.modelWarning ? (
+                      <p className="text-warn" style={{ marginTop: 0 }}>
+                        {msg.modelWarning}
+                      </p>
+                    ) : null}
+                    {!msg.error && msg.content ? (
+                      <div className="report-flow">{msg.content}</div>
+                    ) : null}
+                    {!msg.error && !msg.content ? (
+                      <p className="text-error" style={{ marginTop: 0 }}>
+                        未收到模型正文。请查看上方报错或下方讲义摘录。
+                      </p>
+                    ) : null}
+                  </div>
                   <details
                     className="app-details full-ai-appendix"
                     defaultOpen={Boolean(msg.error || msg.modelWarning)}
                   >
-                    <summary>附录 · 推演结构与讲义细节（与「一」对照）</summary>
+                    <summary>讲义摘录与技术明细（可选）</summary>
                     <div className="details-body">
                       <StructuredAppendix
                         p={msg.payload}

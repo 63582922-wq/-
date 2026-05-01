@@ -1,0 +1,20 @@
+# Render Blueprint：https://render.com/docs/infrastructure-as-code
+# 控制台：New → Blueprint → 连接本仓库，或手动创建 Web Service 并选 Docker。
+
+services:
+  - type: web
+    name: xgbm-personality-agent
+    runtime: docker
+    region: singapore
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: PERSONALITY_AI_BASE_URL
+        value: https://api.deepseek.com/v1
+      - key: PERSONALITY_AI_MODEL
+        value: deepseek-chat
+      # Dashboard prompts for value on first Blueprint apply (sync:false)
+      - key: PERSONALITY_AI_API_KEY
+        sync: false

@@ -19,3 +19,17 @@ export function parseSolarIso(iso: string): { y: number; m: number; d: number } 
   if (d > dim) return null;
   return { y, m: mo, d };
 }
+
+/**
+ * 与 personality_encoder.encode.extract_date_candidates 的正则一致：
+ * 正文里若出现可抽取的阳历片段，请求应不传 birth_date，由后端从 message 解析，
+ * 避免仍带上日历选择框里的旧 ISO。
+ */
+export function messageHasExtractableBirthDate(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/.test(t)) return true;
+  if (/(?<!\d)(\d{8})(?!\d)/.test(t)) return true;
+  if (/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?/.test(t)) return true;
+  return false;
+}

@@ -420,7 +420,7 @@ def compose_personality_synthesis(
     lines.append("")
     lines.append("八、使用说明与伦理边界")
     lines.append(
-        "本报告为文化隐喻框架下的自我觉察工具，不构成心理咨询诊断、精神障碍判定或命运断言。"
+        "本报告为文化隐喻框架下的自我觉察工具，供文化语境下的性格隐喻讨论参考。"
         "解读时应结合来访者自述与生活情境；数字与词条无优劣之分，阴面亦仅代表失衡时的倾向。"
     )
     lines.append(

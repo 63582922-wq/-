@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { messageHasExtractableBirthDate } from "./date-parse";
 import LunarBirthField from "./lunar-birth-field";
 
 /** 须与 web/backend/main.py 中 API_BUILD_MARK 保持一致 */
-const EXPECTED_API_BUILD_MARK = "reply-source-v6";
+const EXPECTED_API_BUILD_MARK = "reply-source-v8";
 
 type FusionGroup = {
   label: string;
@@ -51,7 +52,9 @@ type ChatMessage = {
     | "local_result"
     | "ai_loading"
     /** 本地 + 大模型合并为一条气泡，减少层级嵌套 */
-    | "combined_report";
+    | "combined_report"
+    /** 基于同一测算的多轮追问回复 */
+    | "followup_chat";
   payload?: AgentPayload;
   error?: string;
   /** 模型失败但仍有本地正文时由服务端下发 */
@@ -67,6 +70,43 @@ type ChatMessage = {
     api_host: string;
   };
 };
+
+type ChatTurnApi = { role: "user" | "assistant"; content: string };
+
+function formatBirthIso(b: { y: number; m: number; d: number }): string {
+  return `${b.y}-${String(b.m).padStart(2, "0")}-${String(b.d).padStart(2, "0")}`;
+}
+
+/** 供给 /api/chat 的 history：不含当前正在发送的这一条用户话。 */
+function buildApiHistory(msgs: ChatMessage[]): ChatTurnApi[] {
+  const out: ChatTurnApi[] = [];
+  let seenUser = false;
+  for (const m of msgs) {
+    if (m.role === "user") {
+      const c = m.content.trim();
+      if (!c) continue;
+      seenUser = true;
+      out.push({ role: "user", content: c });
+      continue;
+    }
+    if (m.role === "assistant") {
+      if (!seenUser) continue;
+      if (m.loading) continue;
+      if (m.error) continue;
+      const c = m.content.trim();
+      if (!c) continue;
+      if (
+        m.step === "local_compute" ||
+        m.step === "local_result" ||
+        m.step === "ai_loading"
+      ) {
+        continue;
+      }
+      out.push({ role: "assistant", content: c });
+    }
+  }
+  return out;
+}
 
 async function fetchLocalPayload(
   message: string,
@@ -115,7 +155,14 @@ async function fetchLocalPayload(
   return { ok: true, payload };
 }
 
-async function sendChat(message: string, birthDate: string): Promise<ChatMessage> {
+async function sendChat(params: {
+  message: string;
+  birthDate: string;
+  history?: ChatTurnApi[];
+  /** 与后端 ChatBody.client_followup 一致：追问轮须为 true，避免 history 异常时重复走首轮要点。 */
+  clientFollowup?: boolean;
+}): Promise<ChatMessage> {
+  const { message, birthDate, history = [], clientFollowup = false } = params;
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -123,6 +170,8 @@ async function sendChat(message: string, birthDate: string): Promise<ChatMessage
     body: JSON.stringify({
       message,
       birth_date: birthDate.trim() || null,
+      history,
+      client_followup: clientFollowup,
     }),
   });
   const replySrcHeader = (res.headers.get("X-Reply-Source") ?? "").trim();
@@ -326,7 +375,13 @@ function bubbleClass(msg: ChatMessage): string {
   if (msg.role === "user") return `${base} app-bubble--user`;
   if (msg.role === "assistant" && msg.loading) return `${base} app-bubble--pending`;
   if (msg.error) return `${base} app-bubble--error`;
-  if (msg.role === "assistant" && msg.payload) return `${base} app-bubble--result`;
+  if (
+    msg.role === "assistant" &&
+    msg.payload &&
+    (msg.step === "combined_report" || msg.step === "followup_chat")
+  ) {
+    return `${base} app-bubble--result`;
+  }
   return base;
 }
 
@@ -336,11 +391,14 @@ export default function App() {
       role: "assistant",
       content:
         "你好。请先选择阴历生日并确认，或在右侧输入阳历日期（如 1994-01-15、1994/3/8），再点「发送」。\n\n"
-        + "发送后会在同一条回复里先后完成：先显示推算摘要，再在同一气泡内接上模型解读（中间可能有十余秒等待）。\n\n"
-        + "底部一处「讲义摘录与技术明细」可展开查看详情。内容为性格隐喻参考，非心理咨询诊断。",
+        + "首次发送会先完成本地推算，再给出一段模型撰写的**个性简述**（散文体，非分条推演）。\n\n"
+        + "测算完成后，只要继续在输入框里打字发送，即可**基于同一生日**与助手多轮追问；若要换生日，请在消息里写出新的阳历日期。\n\n"
+        + "展开「讲义摘录与技术明细」可对照详情。内容为性格隐喻参考。",
     },
   ]);
   const [input, setInput] = useState("");
+  /** 最近一次成功测算的阳历 ISO，用于无日期时的追问与重算。 */
+  const [lockedBirthIso, setLockedBirthIso] = useState("");
   const [birthPicker, setBirthPicker] = useState("");
   const [busy, setBusy] = useState(false);
   const [submitHint, setSubmitHint] = useState("");
@@ -376,14 +434,91 @@ export default function App() {
     e.preventDefault();
     const text = input.trim();
     const iso = birthPicker.trim();
-    if (!text && !iso) {
+    const hasDateInMessage = messageHasExtractableBirthDate(text);
+    const canResolveBirth =
+      hasDateInMessage ||
+      Boolean(iso) ||
+      (Boolean(lockedBirthIso) && Boolean(text) && !hasDateInMessage);
+    if (!canResolveBirth) {
       setSubmitHint(
-        "尚未填写生日：请先点上方选择阴历并确认，或在右侧输入阳历日期后再点发送。",
+        "尚未识别到可用的阳历生日：请选择阴历并确认、在右侧输入阳历，或在完成一次测算后直接输入追问内容。",
       );
       return;
     }
-    setSubmitHint("");
     const userLine = text || (iso ? `请测算阳历生日 ${iso}` : "");
+    if (!userLine.trim()) {
+      setSubmitHint("请输入要问的内容，或选择生日后发送。");
+      return;
+    }
+    setSubmitHint("");
+
+    const birthFromPicker = hasDateInMessage ? "" : text ? lockedBirthIso || iso : iso;
+    const followUpOnly =
+      Boolean(lockedBirthIso) && Boolean(text) && !hasDateInMessage;
+
+    const historyForApi = buildApiHistory(messages);
+
+    const stripLoading = (prev: ChatMessage[]) =>
+      prev.filter((m) => !(m.role === "assistant" && m.loading));
+
+    if (followUpOnly) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: userLine },
+        {
+          role: "assistant",
+          content: "正在回复…",
+          loading: true,
+          step: "ai_loading",
+        },
+      ]);
+      setInput("");
+      setBusy(true);
+      try {
+        const first = await fetchLocalPayload(text, lockedBirthIso);
+        if (!first.ok) {
+          setMessages((prev) => [
+            ...stripLoading(prev),
+            { role: "assistant", content: "", error: first.error },
+          ]);
+          return;
+        }
+        const birthThisRound = formatBirthIso(first.payload.birth);
+        setLockedBirthIso(birthThisRound);
+        const reply = await sendChat({
+          message: text,
+          birthDate: birthThisRound,
+          history: historyForApi,
+          clientFollowup: true,
+        });
+        setMessages((prev) => [
+          ...stripLoading(prev),
+          {
+            role: "assistant",
+            step: "followup_chat",
+            payload: first.payload,
+            content: reply.content,
+            error: reply.error,
+            modelWarning: reply.modelWarning,
+            replySource: reply.replySource,
+            generationMeta: reply.generationMeta,
+          },
+        ]);
+      } catch {
+        setMessages((prev) => [
+          ...stripLoading(prev),
+          {
+            role: "assistant",
+            content: "",
+            error: "网络不畅，请稍后重试。",
+          },
+        ]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     setMessages((prev) => [
       ...prev,
       { role: "user", content: userLine },
@@ -397,11 +532,9 @@ export default function App() {
     setInput("");
     setBusy(true);
     let localPayload: AgentPayload | undefined;
-    const stripLoading = (prev: ChatMessage[]) =>
-      prev.filter((m) => !(m.role === "assistant" && m.loading));
 
     try {
-      const first = await fetchLocalPayload(text, iso);
+      const first = await fetchLocalPayload(text, birthFromPicker);
       if (!first.ok) {
         setMessages((prev) => [
           ...stripLoading(prev),
@@ -410,6 +543,7 @@ export default function App() {
         return;
       }
       localPayload = first.payload;
+      setLockedBirthIso(formatBirthIso(first.payload.birth));
       setMessages((prev) => [
         ...stripLoading(prev),
         {
@@ -424,14 +558,18 @@ export default function App() {
         ...prev,
         {
           role: "assistant",
-          content:
-            "分析生成中。。。。",
+          content: "分析生成中。。。。",
           loading: true,
           step: "ai_loading",
         },
       ]);
 
-      const reply = await sendChat(text, iso);
+      const reply = await sendChat({
+        message: text,
+        birthDate: birthFromPicker,
+        history: [],
+        clientFollowup: false,
+      });
       setMessages((prev) => {
         const rest = stripLoading(prev);
         const tail = rest[rest.length - 1];
@@ -494,7 +632,7 @@ export default function App() {
     <div className="app-shell">
       <header className="app-header">
         <h1>性格编码智能体</h1>
-        <p>生日推演 · 解读参考 · 非临床诊断</p>
+        <p>生日推演 · 解读参考</p>
       </header>
 
       {backendBanner ? (
@@ -522,7 +660,11 @@ export default function App() {
                   {msg.content}
                 </p>
               ) : null}
-              {msg.role === "assistant" && !msg.loading && msg.error && msg.step !== "combined_report" ? (
+              {msg.role === "assistant" &&
+              !msg.loading &&
+              msg.error &&
+              msg.step !== "combined_report" &&
+              msg.step !== "followup_chat" ? (
                 <p className="text-error">{msg.error}</p>
               ) : null}
               {msg.role === "assistant" && !msg.loading && msg.step === "local_result" && msg.payload ? (
@@ -546,7 +688,7 @@ export default function App() {
                     <LogicSummary p={msg.payload} />
                   </div>
                   <div className="result-section">
-                    <div className="result-section-title">性格分析</div>
+                    <div className="result-section-title">个性简述</div>
                     {msg.error && msg.payload.personality_synthesis ? (
                       <>
                         <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
@@ -592,6 +734,39 @@ export default function App() {
                   <p className="disclaimer">{msg.payload.disclaimer}</p>
                 </>
               ) : null}
+              {msg.role === "assistant" && !msg.loading && msg.step === "followup_chat" && msg.payload ? (
+                <>
+                  {msg.error ? <p className="text-error">{msg.error}</p> : null}
+                  <div className="result-section">
+                    <div className="result-section-title">追问回复</div>
+                    {!msg.error && msg.modelWarning ? (
+                      <p className="text-warn" style={{ marginTop: 0 }}>
+                        {msg.modelWarning}
+                      </p>
+                    ) : null}
+                    {!msg.error && msg.content ? (
+                      <div className="report-flow">{msg.content}</div>
+                    ) : null}
+                    {!msg.error && !msg.content ? (
+                      <p className="text-error" style={{ marginTop: 0 }}>
+                        未收到模型正文。请查看上方报错或下方讲义摘录。
+                      </p>
+                    ) : null}
+                  </div>
+                  <details className="app-details full-ai-appendix" defaultOpen={false}>
+                    <summary>讲义摘录与技术明细（对照）</summary>
+                    <div className="details-body">
+                      <LogicSummary p={msg.payload} />
+                      <StructuredAppendix
+                        p={msg.payload}
+                        omitLogicSummary
+                        omitPersonalitySynthesis
+                      />
+                    </div>
+                  </details>
+                  <p className="disclaimer">{msg.payload.disclaimer}</p>
+                </>
+              ) : null}
               {msg.role === "assistant" && !msg.loading && !msg.payload && msg.content && (
                 <div>{msg.content}</div>
               )}
@@ -617,7 +792,7 @@ export default function App() {
                 setInput(e.target.value);
                 setSubmitHint("");
               }}
-              placeholder="阳历：1994-01-15 / 1994/3/8 / 19940308 / 1994年1月15日"
+              placeholder="生日或追问：19940308 / 内圈第三组是什么意思"
               disabled={busy}
               enterKeyHint="send"
               autoComplete="off"

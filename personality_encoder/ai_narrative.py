@@ -8,12 +8,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.parse
 import ssl
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,9 @@ def _ensure_dotenv_loaded() -> None:
             return
 
 
-def compact_payload_for_llm(payload: dict) -> Dict[str, Any]:
+def compact_payload_for_llm(
+    payload: dict, *, include_official_template: bool = True
+) -> Dict[str, Any]:
     """压缩传给模型的上下文，减少 token。"""
     def _groups(gs):
         return [
@@ -76,7 +79,7 @@ def compact_payload_for_llm(payload: dict) -> Dict[str, Any]:
             for g in gs or []
         ]
 
-    return {
+    out: Dict[str, Any] = {
         "birth": payload.get("birth"),
         "triangle_inner_top": payload.get("triangle", {}).get("inner_top"),
         "triangle_boxes8": payload.get("triangle", {}).get("boxes8"),
@@ -91,40 +94,44 @@ def compact_payload_for_llm(payload: dict) -> Dict[str, Any]:
         "fusion_groups": _groups(payload.get("fusion_groups")),
         "algorithm_note": payload.get("algorithm_note"),
         "disclaimer": payload.get("disclaimer"),
-        "official_template_report": payload.get("personality_synthesis"),
     }
+    if include_official_template:
+        out["official_template_report"] = payload.get("personality_synthesis")
+    return out
 
 
-FULL_REPORT_SYSTEM_PROMPT = """你是资深性格隐喻取向工作坊里的「口述报告撰写助手」。输出一整篇给用户阅读的性格解读（不要用 JSON、不要用 Markdown 代码块）。
+FULL_REPORT_SYSTEM_PROMPT = """你是性格隐喻工作坊的写作助手。根据随后给出的结构化测算材料，写一段给当事人看的「个性简述」，全文为简体中文。
 
-硬性规则（违反视为严重错误）：
-1. 所有阳历生日年月日、三角形顶点底色数字、底部八位数字序列（若材料中有 triangle_boxes8）、外圈三组融合码与内圈三组融合码（每组三位）必须与输入 JSON 完全一致；禁止改任何一个数字。
-2. 性格描述只能依据 JSON 里的 inner_top_digit、inner_fusion_groups、outer_fusion_groups（讲义字段：卦象节气时辰、核心物理属性、阳面、阴面）以及质_后两位里的板书摘录；禁止编造新的卦名或课堂未出现的术语。
-3. 叙事层级须尊重 interpretation_frame：外圈三组多对应社会情境中的外显面貌；内圈三组均为真实自我核心——前两组为三角形内左下与右下融合码，第三组为顶点融合码（最内在）；亲密关系常以第三组为关键参照，但必须同时呼应前两组讲义内涵，不可只写第三组。
-4. 可以把讲义语言转写成更易懂的口语与比喻，但不得与讲义阴阳面的基本含义相冲突。
+【写什么】
+用连贯、好读的一小段或多小段散文（不必列表、不必按「第几行」排版），概括其气质与行为倾向。材料中的公历生日、三角形顶点底色数字、外圈三组融合码及中文标签、内圈三组融合码及中文标签须在文中**自然点明且与材料完全一致**（数字与码不可错，标签须用材料原文）。可融入讲义里「形」所带的阳面、阴面意味，融入叙述即可，**不必**机械套用「阳面：」「阴面：」标签式逐条罗列。若材料中有「解读框架」段落，可内化进叙述，勿整段照抄。
 
-输出结构（必须严格遵守）：
-• 不要使用「1 · 纯逻辑推演」「2 · 综合性格分析」等分段标题，也不要按步骤拆解三角形、九进制算法或 boxes8 推导链路；禁止用小标题、条目清单式的「结构逻辑拆解」。
-• 开头最多用 1～2 句自然叙述点明：阳历生日与顶点底色、内外圈三组码（须带上 fusion_labels / fusion_inner_labels 对应的中文情境标签），数字与码与 JSON 完全一致即可，点到为止。
-• 正文为主体：用连贯散文写性格倾向、情绪与人际模式、内在张力与可能的成长线索；内外圈含义自然交织融入叙述，不要单独再开一章讲「推算逻辑」。多用「往往会」「有时会」「也可能」等弹性表述。
-• 结尾单独 1～2 句：此为文化隐喻与自我觉察工具，非心理咨询诊断或命运断言。
+【禁止】
+正文出现半角英文或下划线式材料键名；Markdown 与代码块；写作过程、自我检讨、「根据提示」「以下是」等元叙述；编造材料中没有的码或说法；有序号列表（1.2.3.）。
 
-文风：全文简体中文；温暖、克制；像面谈纪要而不是说明书。
-
-篇幅建议：全文约 900～1400 字（开头锚定信息控制在约 80～150 字内）。"""
+【篇幅与语气】
+约三百至六百字；语气温和克制，拿不准的用「往往」「有时」等弹性表述。可自然收束，无固定套话要求。"""
 
 
-def generate_full_ai_report(payload: dict) -> str:
-    """
-    调用 OpenAI 兼容 Chat Completions API。
-    环境变量（密钥按顺序取第一个非空的）：
-      PERSONALITY_AI_API_KEY、OPENAI_API_KEY、DEEPSEEK_API_KEY
-      PERSONALITY_AI_BASE_URL（须含路径前缀，默认 https://api.openai.com/v1）
-        DeepSeek 兼容调用请用：https://api.deepseek.com/v1（代码会再拼 /chat/completions）
-      PERSONALITY_AI_MODEL（默认 gpt-4o-mini；DeepSeek V4 Pro 示例：deepseek-v4-pro）
+FOLLOWUP_SYSTEM_PROMPT = """你是同一工作坊的对话助理。用户已看过首轮的「个性简述」，现在继续聊天追问。
 
-    若在仓库根目录放置 .env（已 gitignore），后端启动时会加载。
-    """
+【事实约束】
+系统消息里的测算材料中的生日、融合码、中文标签须保持一致，不得编造新材料或改码。
+
+【回答方式】
+只针对用户最后一条里的问题作答，用自然口语，默认两三句到一小段即可，除非用户明确要求长文。
+不要整篇重写首轮简述，除非用户明确要求再总结一遍；不要输出写作计划、字数说明或对系统说明的复述；不要输出 Markdown 或代码块。
+
+【材料使用】
+材料仅供核对事实；用你自己的话简要回应，不要把材料整段贴回。"""
+
+
+def _openai_compatible_chat(
+    *,
+    messages: List[Dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    """调用 OpenAI 兼容 Chat Completions，返回 assistant 正文。"""
     _ensure_dotenv_loaded()
     api_key = (
         os.environ.get("PERSONALITY_AI_API_KEY")
@@ -141,25 +148,12 @@ def generate_full_ai_report(payload: dict) -> str:
     ).rstrip("/")
     model = os.environ.get("PERSONALITY_AI_MODEL", "gpt-4o-mini")
 
-    compact = compact_payload_for_llm(payload)
-    user_content = (
-        "以下为本次测算的结构化事实（含讲义摘录与咨询报告模版正文；数字与码不可改动）：\n\n"
-        + json.dumps(compact, ensure_ascii=False, indent=2)
-        + "\n\n请严格按照系统提示输出：无推演分段标题、无结构逻辑拆解；以性格描述为主的连贯口述。"
-        "不要输出原始 JSON。"
-        "可把 official_template_report 当作素材吸收其含义，但不要照搬其条目或小标题结构。"
-        "若模版与 inner_fusion_groups / outer_fusion_groups 讲义有重叠，以讲义字段为准展开细节。"
-    )
-
     body = json.dumps(
         {
             "model": model,
-            "temperature": 0.68,
-            "max_tokens": 4096,
-            "messages": [
-                {"role": "system", "content": FULL_REPORT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": messages,
         },
         ensure_ascii=False,
     ).encode("utf-8")
@@ -203,6 +197,164 @@ def generate_full_ai_report(payload: dict) -> str:
     if not text:
         raise RuntimeError(f"模型返回空正文：{raw!r}") from None
     return text
+
+
+def _remove_ascii_parentheticals(text: str) -> str:
+    """去掉含英文或下划线的全角/半角括号说明。"""
+    t = text or ""
+    for _ in range(32):
+        n = re.sub(r"（[^）]*[A-Za-z_][^）]*）", "", t)
+        n = re.sub(r"\([^)]*[A-Za-z_][^)]*\)", "", n)
+        if n == t:
+            break
+        t = n
+    return t
+
+
+def _drop_meta_instruction_lines(text: str) -> str:
+    """去掉模型误输出的「教案目录」行（勿误删含码的要点行）。"""
+    skip_starts = (
+        "第二至四行",
+        "第五至七行",
+        "然后，若",
+        "然后若",
+        "每行格式",
+        "倾向需要从",
+        "倾向提取",
+        "外圈标签和码",
+        "内圈标签和码",
+        "注意要",
+        "若有interpretation",
+        "材料中有较长",
+    )
+    out: list[str] = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("最后一行") and "此为文化隐喻与自我觉察参考" in s:
+            i = s.find("此为文化隐喻与自我觉察参考")
+            out.append(s[i:].rstrip())
+            continue
+        if s.startswith("最后一行") and "此为文化隐喻与自我觉察参考" not in s:
+            continue
+        if any(s.startswith(p) for p in skip_starts):
+            continue
+        if re.match(r"^对于\d{3}", s):
+            continue
+        out.append(ln.rstrip())
+    return "\n".join(out).strip()
+
+
+def _prefer_clean_first_sentence_block(text: str) -> str:
+    """若出现「所以第…行：」后接正常要点，优先保留从该要点起的内容。"""
+    t = (text or "").strip()
+    if not t:
+        return t
+    m = re.search(r"所以第[一二三四五六七八九十\d]+行[：:]\s*(\d{4}年)", t)
+    if m:
+        return t[m.start(1) :].strip()
+    return t
+
+
+def _strip_leading_cot_from_report(text: str) -> str:
+    """从首处完整公历「YYYY年M月D日」起截断（去掉其前的元叙述）。"""
+    t = (text or "").strip()
+    if not t:
+        return t
+    m = re.search(r"\d{4}年\d{1,2}月\d{1,2}日", t)
+    if m:
+        return t[m.start() :].strip()
+    m2 = re.search(r"\d{4}[-/.．]\s*\d{1,2}[-/.．]\s*\d{1,2}", t)
+    if m2:
+        return t[m2.start() :].strip()
+    return t
+
+
+def _sanitize_full_report_output(text: str) -> str:
+    """首轮个性简述：去英文括注、删明显教案式行；若有固定收束句则截断其后。"""
+    t = _remove_ascii_parentheticals(text)
+    t = _drop_meta_instruction_lines(t)
+    t = _prefer_clean_first_sentence_block(t)
+    t = _strip_leading_cot_from_report(t)
+    if "此为文化隐喻与自我觉察参考" in t:
+        t = _strip_trailing_after_disclaimer_line(t)
+    return t.strip()
+
+
+def _strip_trailing_after_disclaimer_line(text: str) -> str:
+    """收束句之后若模型继续推演，一律截断。"""
+    lines = text.splitlines()
+    out: list[str] = []
+    for ln in lines:
+        out.append(ln)
+        if "此为文化隐喻与自我觉察参考" in ln:
+            break
+    return "\n".join(out).strip() if out else text.strip()
+
+
+def generate_full_ai_report(payload: dict) -> str:
+    """
+    调用 OpenAI 兼容 Chat Completions API。
+    环境变量（密钥按顺序取第一个非空的）：
+      PERSONALITY_AI_API_KEY、OPENAI_API_KEY、DEEPSEEK_API_KEY
+      PERSONALITY_AI_BASE_URL（须含路径前缀，默认 https://api.openai.com/v1）
+        DeepSeek 兼容调用请用：https://api.deepseek.com/v1（代码会再拼 /chat/completions）
+      PERSONALITY_AI_MODEL（默认 gpt-4o-mini；DeepSeek V4 Pro 示例：deepseek-v4-pro）
+
+    若在仓库根目录放置 .env（已 gitignore），后端启动时会加载。
+    """
+    compact = compact_payload_for_llm(payload, include_official_template=False)
+    user_content = (
+        "以下为本次测算的结构化事实（数字、码、中文标签不可改动）：\n\n"
+        + json.dumps(compact, ensure_ascii=False, indent=2)
+        + "\n\n请只按系统提示写一段「个性简述」正文；不要复述本段里的英文键名，不要任何说明性前缀。"
+    )
+    raw = _openai_compatible_chat(
+        messages=[
+            {"role": "system", "content": FULL_REPORT_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        max_tokens=1400,
+        temperature=0.52,
+    )
+    return _sanitize_full_report_output(raw)
+
+
+def generate_followup_reply(
+    payload: dict,
+    history: List[Dict[str, str]],
+    user_message: str,
+) -> str:
+    """
+    多轮追问：history 为不含当前句的 prior 对话（user/assistant 交替内容）；
+    user_message 为当前用户输入。测算 JSON 放在 system 内，避免与首轮「user+JSON」雷同诱发复读。
+    """
+    compact = compact_payload_for_llm(payload, include_official_template=False)
+    facts_json = json.dumps(compact, ensure_ascii=False, indent=2)
+    system_block = (
+        FOLLOWUP_SYSTEM_PROMPT
+        + "\n\n【以下为仅供你内部参照的测算材料；勿照抄成报告体，勿整篇重复首轮个性简述】\n"
+        + facts_json
+    )
+    msgs: List[Dict[str, Any]] = [{"role": "system", "content": system_block}]
+    max_hist = 24
+    tail = history[-max_hist:] if len(history) > max_hist else history
+    for turn in tail:
+        role = turn.get("role")
+        content = (turn.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        msgs.append({"role": role, "content": content})
+    um = (user_message or "").strip()
+    if not um:
+        raise ValueError("follow-up user_message 为空")
+    msgs.append({"role": "user", "content": um})
+    return _openai_compatible_chat(
+        messages=msgs,
+        max_tokens=900,
+        temperature=0.72,
+    )
 
 
 def _extract_assistant_text(message: Any) -> str:

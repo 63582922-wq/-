@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,7 +51,7 @@ from personality_encoder.encode import (
 KNOWLEDGE_PATH = ROOT / "personality_encoder" / "knowledge.json"
 
 # 用于自检：若 GET /api/status 的 build_mark 不是此值，说明浏览器连上的仍是旧进程或未部署新代码。
-API_BUILD_MARK = "reply-source-v6"
+API_BUILD_MARK = "reply-source-v8"
 
 app = FastAPI(title="性格编码智能体", version="1.0.0")
 
@@ -102,12 +102,25 @@ class EncodeBody(BaseModel):
     )
 
 
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(default="", max_length=48000)
+
+
 class ChatBody(BaseModel):
     message: str = ""
     birth_date: Optional[str] = Field(None, description="可选，直接指定阳历生日")
     narrative: Optional[bool] = Field(
         None,
         description="已废弃：始终生成综合性格分析；传入值将被忽略。",
+    )
+    history: List[ChatTurn] = Field(
+        default_factory=list,
+        description="多轮追问：不含当前 message 的先前 user/assistant 正文。",
+    )
+    client_followup: bool = Field(
+        False,
+        description="前端声明本轮为追问：即使 history 为空也走对话式回复，避免误走首轮要点。",
     )
 
 
@@ -256,19 +269,38 @@ def chat(body: ChatBody, response: Response):
         response.headers["X-Reply-Source"] = "bad_request"
         return ChatResponse(reply="", payload=None, error=_http_detail(e))
     payload = build_web_payload(y, m, d, _knowledge())
+    if (body.history or body.client_followup) and not (body.message or "").strip():
+        response.headers["X-Reply-Source"] = "bad_request"
+        return ChatResponse(
+            reply="",
+            payload=_payload_for_chat_client(payload),
+            error="追问内容不能为空。",
+        )
     try:
         from personality_encoder.ai_narrative import (
             MissingAiApiKeyError,
+            generate_followup_reply,
             generate_full_ai_report,
         )
 
         t0 = time.perf_counter()
-        report = generate_full_ai_report(payload)
+        hist = [
+            {"role": t.role, "content": c}
+            for t in body.history
+            if (c := (t.content or "").strip())
+        ]
+        use_followup = bool(hist) or bool(body.client_followup)
+        if use_followup:
+            report = generate_followup_reply(payload, hist, body.message)
+        else:
+            report = generate_full_ai_report(payload)
         elapsed = time.perf_counter() - t0
         model_name = os.environ.get("PERSONALITY_AI_MODEL", "gpt-4o-mini")
         logger.info(
-            "chat reply_source=model birth=%s elapsed=%.2fs chars=%s model=%s host=%s",
+            "chat reply_source=model birth=%s followup=%s history_turns=%s elapsed=%.2fs chars=%s model=%s host=%s",
             payload.get("birth"),
+            use_followup,
+            len(hist),
             elapsed,
             len(report),
             model_name,

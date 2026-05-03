@@ -36,6 +36,11 @@ def validate_date(y: int, m: int, d: int) -> None:
         raise ValueError(f"日期无效：{y}-{m:02d}-{d:02d}")
 
 
+def _payload_locale(locale: str | None) -> str:
+    s = (locale or "zh").lower().strip()
+    return "en" if s.startswith("en") else "zh"
+
+
 def eight_boxes_dd_mm_yyyy(y: int, m: int, d: int) -> list[int]:
     """底部八格：日十、日个、月十、月个、年千、年百、年十、年个（与您提供的三角稿一致）。"""
     return [
@@ -256,7 +261,7 @@ def _zhi_preview_sentence(kn: dict, a: int, b: int) -> str:
     )
 
 
-def compose_personality_synthesis(
+def _compose_personality_synthesis_en(
     kn: dict,
     tr: TriangleResult,
     codes: list[tuple[int, int, int]],
@@ -264,9 +269,57 @@ def compose_personality_synthesis(
     m: int,
     d: int,
 ) -> str:
+    """英文界面用的简版纲要：码与结构为英文说明；讲义原文仍在 JSON 分项里（中文）。"""
+    inner_codes = fusion_codes_inner(tr)
+    code_strs = [f"{a}{b}{c}" for a, b, c in codes]
+    inner_strs = [f"{a}{b}{c}" for a, b, c in inner_codes]
+    return "\n".join(
+        [
+            "Personality encoding — reference outline (English)",
+            "",
+            "1. Birth (Gregorian)",
+            f"Date used: {y}-{m:02d}-{d:02d}.",
+            (
+                "Outer ring fusion codes (social / interpersonal stance): "
+                f"(1) {code_strs[0]} — outward (left outer column); "
+                f"(2) {code_strs[1]} — inward (right outer column); "
+                f"(3) {code_strs[2]} — downward (top cross)."
+            ),
+            (
+                "Inner ring fusion codes (core self): "
+                f"(1) {inner_strs[0]} — inner lower-left; "
+                f"(2) {inner_strs[1]} — inner lower-right; "
+                f"(3) {inner_strs[2]} — apex (deepest layer)."
+            ),
+            f"Apex fill digit (triangle top): {tr.inner_top}.",
+            "",
+            "2. Lecture excerpts",
+            (
+                "Detailed bright/shadow lines and two-digit board paths are in the "
+                "structured `fusion_groups` / digit records below, quoted from the "
+                "original Chinese source notes."
+            ),
+            "",
+            f"Sources (original language): {'; '.join(kn['meta']['sources'])}.",
+        ]
+    )
+
+
+def compose_personality_synthesis(
+    kn: dict,
+    tr: TriangleResult,
+    codes: list[tuple[int, int, int]],
+    y: int,
+    m: int,
+    d: int,
+    *,
+    locale: str = "zh",
+) -> str:
     """
     性格编码咨询报告（简版）：咨询文书结构 + 知识库原文串联，不臆测素材外内容。
     """
+    if _payload_locale(locale) == "en":
+        return _compose_personality_synthesis_en(kn, tr, codes, y, m, d)
     base = kn["digits"][str(tr.inner_top)]
     code_strs = [f"{a}{b}{c}" for a, b, c in codes]
     inner_codes = fusion_codes_inner(tr)
@@ -429,11 +482,14 @@ def compose_personality_synthesis(
     return "\n".join(lines)
 
 
-def finalize_report_body(core: str, appendix: str) -> str:
+def finalize_report_body(core: str, appendix: str, *, locale: str = "zh") -> str:
     """正文 + 可选附录 + 报告结束标记。"""
+    en = _payload_locale(locale) == "en"
+    tail = "\n—— End of report ——" if en else "\n—— 报告结束 ——"
+    tail_double = "\n\n—— End of report ——" if en else "\n\n—— 报告结束 ——"
     if appendix.strip():
-        return core + appendix + "\n—— 报告结束 ——"
-    return core + "\n\n—— 报告结束 ——"
+        return core + appendix + tail
+    return core + tail_double
 
 
 EXTENSIONS_FILE = "local_extensions.json"
@@ -484,8 +540,11 @@ def format_extensions_appendix(
     tr: TriangleResult,
     codes: list[tuple[int, int, int]],
     source_path: Path | None,
+    *,
+    locale: str = "zh",
 ) -> tuple[str, dict]:
     """个人札记 / 案例附录；不参与改写讲义与算法。"""
+    en = _payload_locale(locale) == "en"
     meta: dict = {"used": False, "source_path": str(source_path) if source_path else None}
     birth_iso = f"{y}-{m:02d}-{d:02d}"
     fc = [f"{a}{b}{c}" for a, b, c in codes]
@@ -494,7 +553,7 @@ def format_extensions_appendix(
     gn = ext.get("general_notes") or []
     if isinstance(gn, list) and gn:
         meta["used"] = True
-        sections.append("【通用手记】")
+        sections.append("[General notes]" if en else "【通用手记】")
         for x in gn:
             if isinstance(x, str) and x.strip():
                 sections.append(f"　· {x.strip()}")
@@ -503,7 +562,7 @@ def format_extensions_appendix(
     if isinstance(ll, list) and ll:
         meta["used"] = True
         sections.append("")
-        sections.append("【学习 / 核对日志】")
+        sections.append("[Study / check log]" if en else "【学习 / 核对日志】")
         entries: list[tuple[str, str]] = []
         for item in ll:
             if isinstance(item, dict) and item.get("text"):
@@ -536,7 +595,7 @@ def format_extensions_appendix(
         if buf:
             meta["used"] = True
             sections.append("")
-            sections.append("【单数字补充札记】")
+            sections.append("[Digit notes]" if en else "【单数字补充札记】")
             sections.extend(buf)
 
     pairs_needed: set[str] = set()
@@ -559,7 +618,7 @@ def format_extensions_appendix(
         if buf2:
             meta["used"] = True
             sections.append("")
-            sections.append("【两位数路径补充札记】")
+            sections.append("[Two-digit path notes]" if en else "【两位数路径补充札记】")
             sections.extend(buf2)
 
     raw_cases = ext.get("cases") or []
@@ -578,7 +637,11 @@ def format_extensions_appendix(
         if matched:
             meta["used"] = True
             sections.append("")
-            sections.append("【匹配案例档案】（阳历生日或三组融合码一致即展示）")
+            sections.append(
+                "[Matched cases] (same Gregorian birth or same three outer codes)"
+                if en
+                else "【匹配案例档案】（阳历生日或三组融合码一致即展示）"
+            )
             for case in matched:
                 title = case.get("title") or "（无标题）"
                 refl = str(case.get("reflection") or "").strip()
@@ -591,49 +654,117 @@ def format_extensions_appendix(
         return "", meta
 
     header = (
-        "\n\n附录 · 本地累积（个人札记 / 案例）\n"
-        "说明：以下内容来自 local_extensions.json，非《性格编码原理》原文；"
-        "用于沉淀例子与口述心得，不参与改写三角形算法与官方词条。\n"
+        (
+            "\n\nAppendix · Local extensions (notes / cases)\n"
+            "From local_extensions.json (not the canonical textbook); "
+            "for your own examples only; does not change the triangle algorithm.\n"
+        )
+        if en
+        else (
+            "\n\n附录 · 本地累积（个人札记 / 案例）\n"
+            "说明：以下内容来自 local_extensions.json，非《性格编码原理》原文；"
+            "用于沉淀例子与口述心得，不参与改写三角形算法与官方词条。\n"
+        )
     )
     body = "\n".join(sections)
     return header + body + "\n", meta
 
 
-def build_web_payload(y: int, m: int, d: int, kn: dict) -> dict:
+def build_web_payload(y: int, m: int, d: int, kn: dict, *, locale: str = "zh") -> dict:
     """供 Web / 智能体调用的结构化结果（含三角形、三组码、分项释义）。"""
+    loc = _payload_locale(locale)
     tr = triangle_from_birth(y, m, d)
     codes = fusion_codes_outer(tr)
     inner_codes = fusion_codes_inner(tr)
-    ctx_labels = [
-        "对外（左列外圈）",
-        "对内（右列外圈）",
-        "对下（顶端交叉）",
-    ]
-    inner_labels = [
-        "内圈·左下融合码（底层左二格+M左）",
-        "内圈·右下融合码（底层右二格+M右）",
-        "内圈·顶点融合码（M左+M右+顶·最真实内在）",
-    ]
+    if loc == "en":
+        ctx_labels = [
+            "Outward (left outer column)",
+            "Inward (right outer column)",
+            "Downward (top cross)",
+        ]
+        inner_labels = [
+            "Inner · lower-left fusion (bottom-left two digits + M-left)",
+            "Inner · lower-right fusion (bottom-right two digits + M-right)",
+            "Inner · apex fusion (M-left + M-right + apex — deepest self)",
+        ]
+        interpretation_frame = (
+            "The outer left / right / top triples (outward / inward / downward) often read as "
+            "social masks or stance under role pressure. "
+            "The three inner triples are the core self: do not skip the lower-left and lower-right fusions "
+            "(bottom-left pair + M-left, bottom-right pair + M-right); the apex fusion "
+            "(M-left + M-right + apex) usually tracks the deepest layer and close relationships—"
+            "read it together with the other two inner codes."
+        )
+        sources = [
+            "Workshop text Personality Encoding Theory (Chinese source materials).",
+            "Nine instructor board diagrams: two-digit paths collapsed to a single root digit.",
+        ]
+        algorithm_note = (
+            "Gregorian date only. Bottom eight cells left-to-right: day tens, day ones, "
+            "month tens, month ones, year thousands through year ones. "
+            "Add pairs upward with base-9 reduction (digital root to 1–9). "
+            "Outer ring: left column, right column, top cross; "
+            "inner ring: lower-left fusion, lower-right fusion, apex fusion "
+            "(M-left + M-right + apex)."
+        )
+        disclaimer = (
+            "Metaphorical self-reflection only; not medical, legal, or HR advice."
+        )
+    else:
+        ctx_labels = [
+            "对外（左列外圈）",
+            "对内（右列外圈）",
+            "对下（顶端交叉）",
+        ]
+        inner_labels = [
+            "内圈·左下融合码（底层左二格+M左）",
+            "内圈·右下融合码（底层右二格+M右）",
+            "内圈·顶点融合码（M左+M右+顶·最真实内在）",
+        ]
+        interpretation_frame = (
+            "外圈左 / 右 / 上（对外 / 对内 / 对下）多为社会角色下的外显面貌。"
+            "内圈三组均为真实自我核心：三角形内左下、右下两组融合码分别对应底层左二格+M左、底层右二格+M右，解读时勿忽略；"
+            "顶点融合码（M左+M右+顶）最接近最深处，常为亲密关系解读的关键参照，宜与左下、右下两组对照。"
+        )
+        sources = kn["meta"]["sources"]
+        algorithm_note = kn["meta"]["algorithm_note"]
+        disclaimer = kn["meta"]["disclaimer"]
+
     groups = [build_fusion_group(kn, ctx_labels[i], codes[i]) for i in range(3)]
     inner_groups = [
         build_fusion_group(kn, inner_labels[i], inner_codes[i]) for i in range(3)
     ]
 
-    syn_core = compose_personality_synthesis(kn, tr, codes, y, m, d)
+    syn_core = compose_personality_synthesis(kn, tr, codes, y, m, d, locale=locale)
     ext, ext_path = load_extensions_bundle(None)
-    appx, ext_meta = format_extensions_appendix(ext, y, m, d, tr, codes, ext_path)
-    synthesis = finalize_report_body(syn_core, appx)
-
-    assistant_reply = (
-        f"已根据阳历 {y} 年 {m} 月 {d} 日完成三角形九进制推算。\n\n"
-        f"三角形顶点（底色）：{tr.inner_top}\n"
-        f"内圈三组（含三角形内左下、右下与顶点三组融合码；第三组为最内在）：① {inner_groups[0]['code']} · "
-        f"② {inner_groups[1]['code']} · ③ {inner_groups[2]['code']}\n"
-        f"外圈三组（社会情境外显）：① {groups[0]['code']}（对外）· "
-        f"② {groups[1]['code']}（对内）· ③ {groups[2]['code']}（对下）\n\n"
-        "释义来源：《性格编码原理》单数字阴阳面 + 板书两位数细分表。\n\n"
-        + synthesis
+    appx, ext_meta = format_extensions_appendix(
+        ext, y, m, d, tr, codes, ext_path, locale=locale
     )
+    synthesis = finalize_report_body(syn_core, appx, locale=locale)
+
+    if loc == "en":
+        assistant_reply = (
+            f"Completed the triangular base-9 chart for {y}-{m:02d}-{d:02d} (Gregorian).\n\n"
+            f"Apex fill digit: {tr.inner_top}\n"
+            f"Inner ring (three codes; the third is deepest): "
+            f"(1) {inner_groups[0]['code']} · (2) {inner_groups[1]['code']} · (3) {inner_groups[2]['code']}\n"
+            f"Outer ring (social stance): "
+            f"(1) {groups[0]['code']} (outward) · (2) {groups[1]['code']} (inward) · "
+            f"(3) {groups[2]['code']} (downward)\n\n"
+            "Excerpts: single-digit bright/shadow lines from the main text plus two-digit paths from the boards.\n\n"
+            + synthesis
+        )
+    else:
+        assistant_reply = (
+            f"已根据阳历 {y} 年 {m} 月 {d} 日完成三角形九进制推算。\n\n"
+            f"三角形顶点（底色）：{tr.inner_top}\n"
+            f"内圈三组（含三角形内左下、右下与顶点三组融合码；第三组为最内在）：① {inner_groups[0]['code']} · "
+            f"② {inner_groups[1]['code']} · ③ {inner_groups[2]['code']}\n"
+            f"外圈三组（社会情境外显）：① {groups[0]['code']}（对外）· "
+            f"② {groups[1]['code']}（对内）· ③ {groups[2]['code']}（对下）\n\n"
+            "释义来源：《性格编码原理》单数字阴阳面 + 板书两位数细分表。\n\n"
+            + synthesis
+        )
 
     return {
         "birth": {"y": y, "m": m, "d": d},
@@ -670,14 +801,10 @@ def build_web_payload(y: int, m: int, d: int, kn: dict) -> dict:
         "inner_top_digit": digit_record(kn, tr.inner_top),
         "fusion_groups": groups,
         "inner_fusion_groups": inner_groups,
-        "interpretation_frame": (
-            "外圈左 / 右 / 上（对外 / 对内 / 对下）多为社会角色下的外显面貌。"
-            "内圈三组均为真实自我核心：三角形内左下、右下两组融合码分别对应底层左二格+M左、底层右二格+M右，解读时勿忽略；"
-            "顶点融合码（M左+M右+顶）最接近最深处，常为亲密关系解读的关键参照，宜与左下、右下两组对照。"
-        ),
-        "sources": kn["meta"]["sources"],
-        "algorithm_note": kn["meta"]["algorithm_note"],
-        "disclaimer": kn["meta"]["disclaimer"],
+        "interpretation_frame": interpretation_frame,
+        "sources": sources,
+        "algorithm_note": algorithm_note,
+        "disclaimer": disclaimer,
         "personality_synthesis": synthesis,
         "assistant_reply": assistant_reply,
         "local_extensions": {

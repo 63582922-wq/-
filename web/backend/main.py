@@ -51,7 +51,7 @@ from personality_encoder.encode import (
 KNOWLEDGE_PATH = ROOT / "personality_encoder" / "knowledge.json"
 
 # 用于自检：若 GET /api/status 的 build_mark 不是此值，说明浏览器连上的仍是旧进程或未部署新代码。
-API_BUILD_MARK = "reply-source-v8"
+API_BUILD_MARK = "reply-source-v9"
 
 app = FastAPI(title="性格编码智能体", version="1.0.0")
 
@@ -100,6 +100,10 @@ class EncodeBody(BaseModel):
         None,
         description="已废弃：服务端始终生成综合性格分析（口述）；传入值将被忽略。",
     )
+    locale: str = Field(
+        default="zh",
+        description="zh 或 en：影响融合码标签、说明文案与模型报告语言所用材料语言。",
+    )
 
 
 class ChatTurn(BaseModel):
@@ -121,6 +125,10 @@ class ChatBody(BaseModel):
     client_followup: bool = Field(
         False,
         description="前端声明本轮为追问：即使 history 为空也走对话式回复，避免误走首轮要点。",
+    )
+    locale: str = Field(
+        default="zh",
+        description="zh 或 en：影响大模型回复语言及部分错误提示。",
     )
 
 
@@ -170,7 +178,18 @@ def _api_host_hint() -> str:
         return "(unknown)"
 
 
-def _resolve_date(message: str, birth_date: Optional[str]) -> tuple[int, int, int]:
+def _api_locale(raw: Optional[str]) -> str:
+    if raw and str(raw).strip().lower().startswith("en"):
+        return "en"
+    return "zh"
+
+
+def _resolve_date(
+    message: str,
+    birth_date: Optional[str],
+    *,
+    locale: str = "zh",
+) -> tuple[int, int, int]:
     if birth_date:
         try:
             return parse_date(birth_date.strip())
@@ -178,11 +197,27 @@ def _resolve_date(message: str, birth_date: Optional[str]) -> tuple[int, int, in
             raise HTTPException(status_code=400, detail=str(e)) from e
     cands = extract_date_candidates(message)
     if not cands:
+        if locale == "en":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No Gregorian birth date found. Send a date like 1994-01-15, 19940115, "
+                    "or Chinese text such as 1994年1月15日 in the message, or pass birth_date."
+                ),
+            )
         raise HTTPException(
             status_code=400,
             detail="未识别到阳历生日。请发送如 1994-01-15、19940115 或 1994年1月15日。",
         )
     if len(cands) > 1:
+        if locale == "en":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Multiple dates found: {cands}. Keep only one in the message, "
+                    "or specify birth_date."
+                ),
+            )
         raise HTTPException(
             status_code=400,
             detail=f"识别到多个日期 {cands}，请在消息里只保留一个，或通过 birth_date 指定。",
@@ -233,11 +268,12 @@ def encode(body: EncodeBody):
         y, m, d = parse_date(body.birth_date.strip())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    payload = build_web_payload(y, m, d, _knowledge())
+    loc = _api_locale(body.locale)
+    payload = build_web_payload(y, m, d, _knowledge(), locale=loc)
     try:
         from personality_encoder.ai_narrative import generate_full_ai_report
 
-        payload["full_ai_report"] = generate_full_ai_report(payload)
+        payload["full_ai_report"] = generate_full_ai_report(payload, locale=loc)
     except Exception as e:
         raise HTTPException(
             status_code=503,
@@ -256,25 +292,31 @@ def _http_detail(exc: HTTPException) -> str:
 @app.post("/api/compute", response_model=ComputeResponse)
 def compute_only(body: ChatBody):
     """第一步：根据生日完成本地三角形与融合码推演（秒级），不调用模型。"""
-    y, m, d = _resolve_date(body.message, body.birth_date)
-    payload = build_web_payload(y, m, d, _knowledge())
+    loc = _api_locale(body.locale)
+    y, m, d = _resolve_date(body.message, body.birth_date, locale=loc)
+    payload = build_web_payload(y, m, d, _knowledge(), locale=loc)
     return ComputeResponse(payload=_payload_for_chat_client(payload))
 
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(body: ChatBody, response: Response):
+    loc = _api_locale(body.locale)
     try:
-        y, m, d = _resolve_date(body.message, body.birth_date)
+        y, m, d = _resolve_date(body.message, body.birth_date, locale=loc)
     except HTTPException as e:
         response.headers["X-Reply-Source"] = "bad_request"
         return ChatResponse(reply="", payload=None, error=_http_detail(e))
-    payload = build_web_payload(y, m, d, _knowledge())
+    payload = build_web_payload(y, m, d, _knowledge(), locale=loc)
     if (body.history or body.client_followup) and not (body.message or "").strip():
         response.headers["X-Reply-Source"] = "bad_request"
         return ChatResponse(
             reply="",
             payload=_payload_for_chat_client(payload),
-            error="追问内容不能为空。",
+            error=(
+                "Follow-up text cannot be empty."
+                if loc == "en"
+                else "追问内容不能为空。"
+            ),
         )
     try:
         from personality_encoder.ai_narrative import (
@@ -291,9 +333,11 @@ def chat(body: ChatBody, response: Response):
         ]
         use_followup = bool(hist) or bool(body.client_followup)
         if use_followup:
-            report = generate_followup_reply(payload, hist, body.message)
+            report = generate_followup_reply(
+                payload, hist, body.message, locale=loc
+            )
         else:
-            report = generate_full_ai_report(payload)
+            report = generate_full_ai_report(payload, locale=loc)
         elapsed = time.perf_counter() - t0
         model_name = os.environ.get("PERSONALITY_AI_MODEL", "gpt-4o-mini")
         logger.info(
@@ -315,10 +359,14 @@ def chat(body: ChatBody, response: Response):
             reply="",
             payload=_payload_for_chat_client(payload),
             error=(
-                "大模型未调用：未检测到 API Key。"
-                "请在仓库根目录 `.env` 写入 DEEPSEEK_API_KEY 或 OPENAI_API_KEY（以及正确的 PERSONALITY_AI_BASE_URL，DeepSeek 须含 /v1），"
-                "保存后重启 uvicorn。"
-                "页面下方仍会展示本地讲义整合正文供阅读。"
+                "LLM not called: no API key. Add DEEPSEEK_API_KEY or OPENAI_API_KEY (and PERSONALITY_AI_BASE_URL with /v1 for DeepSeek) to repo-root `.env`, restart uvicorn. Local template text may still show below."
+                if loc == "en"
+                else (
+                    "大模型未调用：未检测到 API Key。"
+                    "请在仓库根目录 `.env` 写入 DEEPSEEK_API_KEY 或 OPENAI_API_KEY（以及正确的 PERSONALITY_AI_BASE_URL，DeepSeek 须含 /v1），"
+                    "保存后重启 uvicorn。"
+                    "页面下方仍会展示本地讲义整合正文供阅读。"
+                )
             ),
         )
     except Exception:
@@ -328,8 +376,12 @@ def chat(body: ChatBody, response: Response):
             reply="",
             payload=_payload_for_chat_client(payload),
             error=(
-                "大模型请求失败：请看运行 uvicorn 的终端里的报错（常见：密钥无效、Base URL 缺 /v1、网络或额度）。"
-                "页面下方仍会展示本地讲义整合正文；修好接口后可再点发送。"
+                "LLM request failed: check the uvicorn terminal (invalid key, Base URL missing /v1, network, or quota). Local text may still show below."
+                if loc == "en"
+                else (
+                    "大模型请求失败：请看运行 uvicorn 的终端里的报错（常见：密钥无效、Base URL 缺 /v1、网络或额度）。"
+                    "页面下方仍会展示本地讲义整合正文；修好接口后可再点发送。"
+                )
             ),
         )
     response.headers["X-Reply-Source"] = "model"

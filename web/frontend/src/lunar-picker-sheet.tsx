@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Lunar, LunarYear, Solar } from "lunar-javascript";
 import { parseSolarIso } from "./date-parse";
+import type { Locale } from "./i18n";
+import { t } from "./i18n";
+import {
+  englishLunarMonthRowLabel,
+  formatEnglishLunarDateLine,
+  runWithLunarLang,
+} from "./lunar-locale";
 import { VIEW_H, WheelColumn } from "./wheel-column";
 
 const MIN_LUNAR_YEAR = 1936;
@@ -23,16 +30,24 @@ const MONTH_CN = [
   "腊",
 ];
 
-function formatLunarMonthLabel(lm: { getMonth(): number; isLeap(): boolean }): string {
-  const abs = Math.abs(lm.getMonth());
-  const name = MONTH_CN[abs] ?? `${abs}`;
-  return (lm.isLeap() ? "闰" : "") + name + "月";
+function formatLunarMonthLabel(
+  lm: { getMonth(): number; isLeap(): boolean },
+  _lunarYear: number,
+  locale: Locale,
+): string {
+  if (locale === "zh") {
+    const abs = Math.abs(lm.getMonth());
+    const name = MONTH_CN[abs] ?? `${abs}`;
+    return (lm.isLeap() ? "闰" : "") + name + "月";
+  }
+  return englishLunarMonthRowLabel(lm);
 }
 
 function tryLunarToSolar(
   lunarYear: number,
   monthSlotIndex: number,
-  lunarDay: number
+  lunarDay: number,
+  locale: Locale,
 ): { iso: string; lunarDesc: string } | null {
   try {
     const months = LunarYear.fromYear(lunarYear).getMonthsInYear();
@@ -40,7 +55,11 @@ function tryLunarToSolar(
     if (!lm) return null;
     const lunar = Lunar.fromYmd(lunarYear, lm.getMonth(), lunarDay);
     const solar = lunar.getSolar();
-    return { iso: solar.toYmd(), lunarDesc: lunar.toString() };
+    const lunarDesc =
+      locale === "en"
+        ? formatEnglishLunarDateLine(lunar)
+        : runWithLunarLang(locale, () => lunar.toString());
+    return { iso: solar.toYmd(), lunarDesc };
   } catch {
     return null;
   }
@@ -71,11 +90,13 @@ function initFromSolarIso(iso: string): {
 }
 
 export default function LunarPickerSheet({
+  locale,
   open,
   onClose,
   initialSolarIso,
   onConfirm,
 }: {
+  locale: Locale;
   open: boolean;
   onClose: () => void;
   initialSolarIso: string;
@@ -138,7 +159,10 @@ export default function LunarPickerSheet({
     return Array.from({ length: dim }, (_, i) => i + 1);
   }, [lunarMonthObj]);
 
-  const preview = tryLunarToSolar(lunarYear, monthSlotIndex, lunarDay);
+  const preview = useMemo(
+    () => tryLunarToSolar(lunarYear, monthSlotIndex, lunarDay, locale),
+    [lunarYear, monthSlotIndex, lunarDay, locale],
+  );
 
   if (!open) return null;
 
@@ -154,16 +178,14 @@ export default function LunarPickerSheet({
     >
       <div className="lunar-sheet-panel" onMouseDown={(e) => e.stopPropagation()}>
         <h2 id="lunar-sheet-title" className="lunar-sheet-title">
-          选择阴历生日
+          {t(locale, "sheetTitle")}
         </h2>
-        <p className="lunar-sheet-desc">
-          上下滑动选择农历年、月、日。测算仍按<strong>对应公历</strong>推算。
-        </p>
+        <p className="lunar-sheet-desc">{t(locale, "sheetDesc")}</p>
 
         <div className="wheel-date-labels lunar-sheet-labels">
-          <span>农历年</span>
-          <span>农历月</span>
-          <span>农历日</span>
+          <span>{t(locale, "colYear")}</span>
+          <span>{t(locale, "colMonth")}</span>
+          <span>{t(locale, "colDay")}</span>
         </div>
         <div className="wheel-date lunar-sheet-wheel" style={{ height: VIEW_H }}>
           <div className="wheel-highlight" aria-hidden />
@@ -171,7 +193,7 @@ export default function LunarPickerSheet({
             listKey="lun-col-year"
             items={years}
             value={lunarYear}
-            format={(y) => `${y}年`}
+            format={(y) => `${y}${t(locale, "yearWheelSuffix")}`}
             onPick={setLunarYear}
           />
           <WheelColumn
@@ -180,7 +202,7 @@ export default function LunarPickerSheet({
             value={monthSlotIndex}
             format={(slot) =>
               monthsInYear[slot]
-                ? formatLunarMonthLabel(monthsInYear[slot])
+                ? formatLunarMonthLabel(monthsInYear[slot], lunarYear, locale)
                 : ""
             }
             onPick={setMonthSlotIndex}
@@ -189,7 +211,7 @@ export default function LunarPickerSheet({
             listKey={`d-${lunarYear}-${monthSlotIndex}`}
             items={days}
             value={lunarDay}
-            format={(d) => `${d}日`}
+            format={(d) => `${d}${t(locale, "dayWheelSuffix")}`}
             onPick={setLunarDay}
           />
         </div>
@@ -198,22 +220,24 @@ export default function LunarPickerSheet({
           {preview ? (
             <>
               <div className="lunar-sheet-preview-line">
-                当前农历：<strong>{preview.lunarDesc}</strong>
+                {t(locale, "previewLunar")}
+                <strong>{preview.lunarDesc}</strong>
               </div>
               <div className="lunar-sheet-preview-line">
-                对应公历：<strong>{preview.iso}</strong>
+                {t(locale, "previewSolar")}
+                <strong>{preview.iso}</strong>
               </div>
             </>
           ) : (
             <div className="lunar-sheet-preview-line text-warn">
-              当前组合无法换算，请稍调日期。
+              {t(locale, "previewInvalid")}
             </div>
           )}
         </div>
 
         <div className="lunar-sheet-actions">
           <button type="button" className="lunar-sheet-btn lunar-sheet-btn--ghost" onClick={onClose}>
-            取消
+            {t(locale, "cancel")}
           </button>
           <button
             type="button"
@@ -225,7 +249,7 @@ export default function LunarPickerSheet({
               onClose();
             }}
           >
-            确定 · 使用该公历测算
+            {t(locale, "confirm")}
           </button>
         </div>
       </div>

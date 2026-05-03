@@ -1,9 +1,20 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { messageHasExtractableBirthDate } from "./date-parse";
+import {
+  LOCALE_STORAGE_KEY,
+  type Locale,
+  normalizeLocale,
+  t,
+} from "./i18n";
 import LunarBirthField from "./lunar-birth-field";
 
 /** 须与 web/backend/main.py 中 API_BUILD_MARK 保持一致 */
-const EXPECTED_API_BUILD_MARK = "reply-source-v8";
+const EXPECTED_API_BUILD_MARK = "reply-source-v9";
+
+function readStoredLocale(): Locale {
+  if (typeof window === "undefined") return "zh";
+  return normalizeLocale(window.localStorage.getItem(LOCALE_STORAGE_KEY));
+}
 
 type FusionGroup = {
   label: string;
@@ -111,6 +122,7 @@ function buildApiHistory(msgs: ChatMessage[]): ChatTurnApi[] {
 async function fetchLocalPayload(
   message: string,
   birthDate: string,
+  locale: Locale,
 ): Promise<{ ok: true; payload: AgentPayload } | { ok: false; error: string }> {
   const res = await fetch("/api/compute", {
     method: "POST",
@@ -119,19 +131,19 @@ async function fetchLocalPayload(
     body: JSON.stringify({
       message,
       birth_date: birthDate.trim() || null,
+      locale,
     }),
   });
   let data: Record<string, unknown>;
   try {
     data = await res.json();
   } catch {
-    return { ok: false, error: "服务暂时不可用，请稍后重试。" };
+    return { ok: false, error: t(locale, "serviceUnavailable") };
   }
   if (res.status === 404) {
     return {
       ok: false,
-      error:
-        "后端仍是旧版本（没有 /api/compute）。请在仓库根目录重启 uvicorn，执行 npm run build 并强制刷新页面。",
+      error: t(locale, "backendNoCompute"),
     };
   }
   if (!res.ok) {
@@ -146,11 +158,17 @@ async function fetchLocalPayload(
     } else {
       msg = `HTTP ${res.status}`;
     }
-    return { ok: false, error: msg || `请求失败（HTTP ${res.status}）` };
+    return {
+      ok: false,
+      error: msg || `${t(locale, "requestFailed")} (HTTP ${res.status})`,
+    };
   }
   const payload = data.payload as AgentPayload | undefined;
   if (!payload || typeof payload !== "object") {
-    return { ok: false, error: "本地推演返回数据异常。" };
+    return {
+      ok: false,
+      error: t(locale, "computeInvalidPayload"),
+    };
   }
   return { ok: true, payload };
 }
@@ -161,8 +179,10 @@ async function sendChat(params: {
   history?: ChatTurnApi[];
   /** 与后端 ChatBody.client_followup 一致：追问轮须为 true，避免 history 异常时重复走首轮要点。 */
   clientFollowup?: boolean;
+  locale: Locale;
 }): Promise<ChatMessage> {
-  const { message, birthDate, history = [], clientFollowup = false } = params;
+  const { message, birthDate, history = [], clientFollowup = false, locale } =
+    params;
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -172,6 +192,7 @@ async function sendChat(params: {
       birth_date: birthDate.trim() || null,
       history,
       client_followup: clientFollowup,
+      locale,
     }),
   });
   const replySrcHeader = (res.headers.get("X-Reply-Source") ?? "").trim();
@@ -182,7 +203,7 @@ async function sendChat(params: {
     return {
       role: "assistant",
       content: "",
-      error: "服务暂时不可用，请稍后重试。",
+      error: t(locale, "serviceUnavailable"),
     };
   }
   if (!res.ok) {
@@ -200,7 +221,7 @@ async function sendChat(params: {
     return {
       role: "assistant",
       content: "",
-      error: msg || `请求失败（HTTP ${res.status}）`,
+      error: msg || `${t(locale, "requestFailed")} (HTTP ${res.status})`,
     };
   }
   if (data.error) {
@@ -234,9 +255,7 @@ async function sendChat(params: {
   const serverMw =
     typeof data.model_warning === "string" ? data.model_warning : undefined;
   const fallbackMw =
-    rs === "fallback"
-      ? "当前正文标记为本地整合（非模型全文）。若你期望走大模型，请升级后端并重启服务。"
-      : undefined;
+    rs === "fallback" ? t(locale, "modelFallbackWarning") : undefined;
 
   return {
     role: "assistant",
@@ -253,21 +272,31 @@ function TriangleCard({ tri }: { tri: Record<string, unknown> }) {
   return <pre className="app-triangle-pre">{pretty}</pre>;
 }
 
-function GroupCard({ g }: { g: FusionGroup }) {
+function GroupCard({ g, locale }: { g: FusionGroup; locale: Locale }) {
   return (
     <article className="card-group">
       <header>
         {g.label} · <code>{g.code}</code>
       </header>
       <p style={{ margin: "0 0 8px" }}>
-        形（首位 {g.形.digit}）：{g.形.卦象节气时辰}
+        {locale === "zh"
+          ? `形（首位 ${g.形.digit}）：${g.形.卦象节气时辰}`
+          : `Form (first digit ${g.形.digit}): ${g.形.卦象节气时辰}`}
       </p>
       <ul>
-        <li>阳面：{g.形.阳面.join("；")}</li>
-        <li>阴面：{g.形.阴面.join("；")}</li>
+        <li>
+          {t(locale, "groupYang")}
+          {g.形.阳面.join("；")}
+        </li>
+        <li>
+          {t(locale, "groupYin")}
+          {g.形.阴面.join("；")}
+        </li>
       </ul>
       <p style={{ margin: "12px 0 6px", fontWeight: 600, color: "var(--text)" }}>
-        质（后两位 {g.质_后两位.pair} → 根 {g.质_后两位.root}）
+        {locale === "zh"
+          ? `质（后两位 ${g.质_后两位.pair} → 根 ${g.质_后两位.root}）`
+          : `Substance (last two ${g.质_后两位.pair} → root ${g.质_后两位.root})`}
       </p>
       <ul>
         {g.质_后两位.lines.map((line, i) => (
@@ -277,7 +306,8 @@ function GroupCard({ g }: { g: FusionGroup }) {
       {g.形质联结 && (
         <>
           <p style={{ margin: "12px 0 6px", fontWeight: 600, color: "var(--text)" }}>
-            形质联结（{g.形质联结.pair}）
+            {t(locale, "groupLink")}
+            {g.形质联结.pair}）
           </p>
           <ul>
             {g.形质联结.lines.map((line, i) => (
@@ -290,7 +320,7 @@ function GroupCard({ g }: { g: FusionGroup }) {
   );
 }
 
-function LogicSummary({ p }: { p: AgentPayload }) {
+function LogicSummary({ p, locale }: { p: AgentPayload; locale: Locale }) {
   const { y, m, d } = p.birth;
   const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   const outer = p.fusion_codes_outer3.join(" · ");
@@ -301,16 +331,16 @@ function LogicSummary({ p }: { p: AgentPayload }) {
   return (
     <div className="logic-summary">
       <div className="logic-summary-row">
-        阳历 <code>{iso}</code>
+        {t(locale, "logicSolar")} <code>{iso}</code>
       </div>
       <div className="logic-summary-row">
-        外圈三组（对外 · 对内 · 对下） <code>{outer}</code>
+        {t(locale, "logicOuter")} <code>{outer}</code>
       </div>
       <div className="logic-summary-row">
-        内圈三组（左下 · 右下 · 顶点） <code>{inner}</code>
+        {t(locale, "logicInner")} <code>{inner}</code>
       </div>
       <div className="logic-summary-row">
-        三角形顶点底色 <code>{String(p.inner_top_digit.digit)}</code>
+        {t(locale, "logicVertex")} <code>{String(p.inner_top_digit.digit)}</code>
       </div>
     </div>
   );
@@ -319,18 +349,20 @@ function LogicSummary({ p }: { p: AgentPayload }) {
 /** 推演明细与讲义原文，可与上文解读对照。 */
 function StructuredAppendix({
   p,
+  locale,
   omitPersonalitySynthesis,
   omitLogicSummary,
 }: {
   p: AgentPayload;
+  locale: Locale;
   omitPersonalitySynthesis?: boolean;
   omitLogicSummary?: boolean;
 }) {
   return (
     <div className="structured-appendix">
-      {!omitLogicSummary ? <LogicSummary p={p} /> : null}
+      {!omitLogicSummary ? <LogicSummary p={p} locale={locale} /> : null}
       <details className="app-details">
-        <summary>规则说明与三角形数据</summary>
+        <summary>{t(locale, "detailsRules")}</summary>
         <div className="details-body">
           {p.algorithm_note ? (
             <div className="note-muted" style={{ marginBottom: 12 }}>
@@ -341,26 +373,26 @@ function StructuredAppendix({
         </div>
       </details>
       <p className="digit-line">
-        顶点讲义 · {p.inner_top_digit.digit} · {p.inner_top_digit.卦象节气时辰}
+        {t(locale, "digitLinePrefix")} {p.inner_top_digit.digit} · {p.inner_top_digit.卦象节气时辰}
       </p>
       {p.interpretation_frame && (
         <div className="note-muted">{p.interpretation_frame}</div>
       )}
       {p.inner_fusion_groups && p.inner_fusion_groups.length > 0 && (
         <>
-          <div className="section-label">内圈 · 融合码与讲义摘录</div>
+          <div className="section-label">{t(locale, "sectionInner")}</div>
           {p.inner_fusion_groups.map((g) => (
-            <GroupCard key={`in-${g.code + g.label}`} g={g} />
+            <GroupCard key={`in-${g.code + g.label}`} g={g} locale={locale} />
           ))}
         </>
       )}
-      <div className="section-label">外圈 · 融合码与讲义摘录</div>
+      <div className="section-label">{t(locale, "sectionOuter")}</div>
       {p.fusion_groups.map((g) => (
-        <GroupCard key={g.code + g.label} g={g} />
+        <GroupCard key={g.code + g.label} g={g} locale={locale} />
       ))}
       {p.personality_synthesis && !omitPersonalitySynthesis ? (
         <details className="app-details" style={{ marginTop: 12 }}>
-          <summary>讲义模版全文（对照）</summary>
+          <summary>{t(locale, "personalityTemplateDetails")}</summary>
           <div className="details-body">
             <div className="report-flow">{p.personality_synthesis}</div>
           </div>
@@ -386,15 +418,9 @@ function bubbleClass(msg: ChatMessage): string {
 }
 
 export default function App() {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      content:
-        "你好。请先选择阴历生日并确认，或在右侧输入阳历日期（如 1994-01-15、1994/3/8），再点「发送」。\n\n"
-        + "首次发送会先完成本地推算，再给出一段模型撰写的**个性简述**（散文体，非分条推演）。\n\n"
-        + "测算完成后，只要继续在输入框里打字发送，即可**基于同一生日**与助手多轮追问；若要换生日，请在消息里写出新的阳历日期。\n\n"
-        + "展开「讲义摘录与技术明细」可对照详情。内容为性格隐喻参考。",
-    },
+  const [locale, setLocale] = useState<Locale>(() => readStoredLocale());
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [
+    { role: "assistant", content: t(readStoredLocale(), "welcomeIntro") },
   ]);
   const [input, setInput] = useState("");
   /** 最近一次成功测算的阳历 ISO，用于无日期时的追问与重算。 */
@@ -404,22 +430,33 @@ export default function App() {
   const [submitHint, setSubmitHint] = useState("");
   const [backendBanner, setBackendBanner] = useState<string | null>(null);
 
+  function flipLocale() {
+    const next: Locale = locale === "zh" ? "en" : "zh";
+    setLocale(next);
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, next);
+    setMessages((prev) => {
+      if (prev.length === 1 && prev[0].role === "assistant" && !prev[0].payload) {
+        return [{ role: "assistant", content: t(next, "welcomeIntro") }];
+      }
+      return prev;
+    });
+  }
+
   useEffect(() => {
     let cancelled = false;
+    setBackendBanner(null);
     (async () => {
       try {
         const r = await fetch("/api/status", { cache: "no-store" });
         if (cancelled) return;
         if (r.status === 404) {
-          setBackendBanner(
-            "自检接口不可用（多为旧后端仍在占用端口）：请停掉旧进程后在仓库根目录启动 uvicorn，并 npm run build 后强刷页面。",
-          );
+          setBackendBanner(t(locale, "backendBanner404"));
           return;
         }
         if (!r.ok) return;
         const j = (await r.json()) as { build_mark?: string };
         if (j.build_mark !== EXPECTED_API_BUILD_MARK) {
-          setBackendBanner("后端与前端版本不一致：重启 uvicorn 并强刷页面即可。");
+          setBackendBanner(t(locale, "backendBannerVersion"));
         }
       } catch {
         /* 未启动后端或纯静态预览 */
@@ -428,7 +465,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [locale]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -440,14 +477,12 @@ export default function App() {
       Boolean(iso) ||
       (Boolean(lockedBirthIso) && Boolean(text) && !hasDateInMessage);
     if (!canResolveBirth) {
-      setSubmitHint(
-        "尚未识别到可用的阳历生日：请选择阴历并确认、在右侧输入阳历，或在完成一次测算后直接输入追问内容。",
-      );
+      setSubmitHint(t(locale, "submitHintNoBirth"));
       return;
     }
-    const userLine = text || (iso ? `请测算阳历生日 ${iso}` : "");
+    const userLine = text || (iso ? `${t(locale, "computeSolarPrefix")} ${iso}` : "");
     if (!userLine.trim()) {
-      setSubmitHint("请输入要问的内容，或选择生日后发送。");
+      setSubmitHint(t(locale, "submitHintEmpty"));
       return;
     }
     setSubmitHint("");
@@ -467,7 +502,7 @@ export default function App() {
         { role: "user", content: userLine },
         {
           role: "assistant",
-          content: "正在回复…",
+          content: t(locale, "loadingReply"),
           loading: true,
           step: "ai_loading",
         },
@@ -475,7 +510,7 @@ export default function App() {
       setInput("");
       setBusy(true);
       try {
-        const first = await fetchLocalPayload(text, lockedBirthIso);
+        const first = await fetchLocalPayload(text, lockedBirthIso, locale);
         if (!first.ok) {
           setMessages((prev) => [
             ...stripLoading(prev),
@@ -490,6 +525,7 @@ export default function App() {
           birthDate: birthThisRound,
           history: historyForApi,
           clientFollowup: true,
+          locale,
         });
         setMessages((prev) => [
           ...stripLoading(prev),
@@ -510,7 +546,7 @@ export default function App() {
           {
             role: "assistant",
             content: "",
-            error: "网络不畅，请稍后重试。",
+            error: t(locale, "networkError"),
           },
         ]);
       } finally {
@@ -524,7 +560,7 @@ export default function App() {
       { role: "user", content: userLine },
       {
         role: "assistant",
-        content: "第一步：正在完成本地推算（三角形与融合码）…",
+        content: t(locale, "loadingLocal"),
         loading: true,
         step: "local_compute",
       },
@@ -534,7 +570,7 @@ export default function App() {
     let localPayload: AgentPayload | undefined;
 
     try {
-      const first = await fetchLocalPayload(text, birthFromPicker);
+      const first = await fetchLocalPayload(text, birthFromPicker, locale);
       if (!first.ok) {
         setMessages((prev) => [
           ...stripLoading(prev),
@@ -558,7 +594,7 @@ export default function App() {
         ...prev,
         {
           role: "assistant",
-          content: "分析生成中。。。。",
+          content: t(locale, "loadingAi"),
           loading: true,
           step: "ai_loading",
         },
@@ -569,6 +605,7 @@ export default function App() {
         birthDate: birthFromPicker,
         history: [],
         clientFollowup: false,
+        locale,
       });
       setMessages((prev) => {
         const rest = stripLoading(prev);
@@ -609,7 +646,7 @@ export default function App() {
               step: "combined_report",
               payload: tail.payload,
               content: "",
-              error: "网络不畅，请稍后重试。",
+              error: t(locale, "networkError"),
             },
           ];
         }
@@ -618,7 +655,7 @@ export default function App() {
           {
             role: "assistant",
             content: "",
-            error: "网络不畅，请稍后重试。",
+            error: t(locale, "networkError"),
             payload: localPayload,
           },
         ];
@@ -631,8 +668,20 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>性格编码智能体</h1>
-        <p>生日推演 · 解读参考</p>
+        <div className="app-header-row">
+          <div>
+            <h1>{t(locale, "headerTitle")}</h1>
+            <p>{t(locale, "headerSubtitle")}</p>
+          </div>
+          <button
+            type="button"
+            className="app-lang-toggle"
+            onClick={flipLocale}
+            aria-label={locale === "zh" ? "Switch to English" : "切换到中文"}
+          >
+            {locale === "zh" ? t(locale, "langToEn") : t(locale, "langToZh")}
+          </button>
+        </div>
       </header>
 
       {backendBanner ? (
@@ -669,12 +718,12 @@ export default function App() {
               ) : null}
               {msg.role === "assistant" && !msg.loading && msg.step === "local_result" && msg.payload ? (
                 <>
-                  <p className="reply-provenance">推算摘要（完成后会与模型解读合并为一条）</p>
-                  <LogicSummary p={msg.payload} />
+                  <p className="reply-provenance">{t(locale, "replyProvenanceLocal")}</p>
+                  <LogicSummary p={msg.payload} locale={locale} />
                   <details className="app-details full-ai-appendix" defaultOpen={false}>
-                    <summary>讲义摘录与技术明细</summary>
+                    <summary>{t(locale, "detailsAppendix")}</summary>
                     <div className="details-body">
-                      <StructuredAppendix p={msg.payload} />
+                      <StructuredAppendix p={msg.payload} locale={locale} />
                     </div>
                   </details>
                   <p className="disclaimer">{msg.payload.disclaimer}</p>
@@ -684,22 +733,24 @@ export default function App() {
                 <>
                   {msg.error ? <p className="text-error">{msg.error}</p> : null}
                   <div className="result-section">
-                    <div className="result-section-title">推算摘要</div>
-                    <LogicSummary p={msg.payload} />
+                    <div className="result-section-title">{t(locale, "summaryTitle")}</div>
+                    <LogicSummary p={msg.payload} locale={locale} />
                   </div>
                   <div className="result-section">
-                    <div className="result-section-title">个性简述</div>
+                    <div className="result-section-title">{t(locale, "personalityTitle")}</div>
                     {msg.error && msg.payload.personality_synthesis ? (
                       <>
                         <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
-                          本轮大模型未返回正文。以下为<strong>本地讲义整合</strong>（模版拼装，仅供对照）。
+                          {t(locale, "fallbackLocalNotePrefix")}
+                          <strong>{t(locale, "fallbackLocalNoteStrong")}</strong>
+                          {t(locale, "fallbackLocalNoteSuffix")}
                         </p>
                         <div className="report-flow">{msg.payload.personality_synthesis}</div>
                       </>
                     ) : null}
                     {!msg.error && msg.replySource !== "model" && String(msg.content ?? "").trim() ? (
                       <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
-                        正文已显示；若缺少耗时与型号信息，多为后端未重启或仍在旧进程。
+                        {t(locale, "replyMetaNote")}
                       </p>
                     ) : null}
                     {!msg.error && msg.modelWarning ? (
@@ -712,7 +763,7 @@ export default function App() {
                     ) : null}
                     {!msg.error && !msg.content ? (
                       <p className="text-error" style={{ marginTop: 0 }}>
-                        未收到模型正文。请查看上方报错或下方讲义摘录。
+                        {t(locale, "noModelBody")}
                       </p>
                     ) : null}
                   </div>
@@ -720,10 +771,11 @@ export default function App() {
                     className="app-details full-ai-appendix"
                     defaultOpen={Boolean(msg.error || msg.modelWarning)}
                   >
-                    <summary>讲义摘录与技术明细（可选）</summary>
+                    <summary>{t(locale, "detailsAppendixOptional")}</summary>
                     <div className="details-body">
                       <StructuredAppendix
                         p={msg.payload}
+                        locale={locale}
                         omitLogicSummary
                         omitPersonalitySynthesis={Boolean(
                           msg.error && msg.payload.personality_synthesis,
@@ -738,7 +790,7 @@ export default function App() {
                 <>
                   {msg.error ? <p className="text-error">{msg.error}</p> : null}
                   <div className="result-section">
-                    <div className="result-section-title">追问回复</div>
+                    <div className="result-section-title">{t(locale, "followupTitle")}</div>
                     {!msg.error && msg.modelWarning ? (
                       <p className="text-warn" style={{ marginTop: 0 }}>
                         {msg.modelWarning}
@@ -749,16 +801,17 @@ export default function App() {
                     ) : null}
                     {!msg.error && !msg.content ? (
                       <p className="text-error" style={{ marginTop: 0 }}>
-                        未收到模型正文。请查看上方报错或下方讲义摘录。
+                        {t(locale, "noModelBody")}
                       </p>
                     ) : null}
                   </div>
                   <details className="app-details full-ai-appendix" defaultOpen={false}>
-                    <summary>讲义摘录与技术明细（对照）</summary>
+                    <summary>{t(locale, "detailsAppendixCompare")}</summary>
                     <div className="details-body">
-                      <LogicSummary p={msg.payload} />
+                      <LogicSummary p={msg.payload} locale={locale} />
                       <StructuredAppendix
                         p={msg.payload}
+                        locale={locale}
                         omitLogicSummary
                         omitPersonalitySynthesis
                       />
@@ -778,6 +831,7 @@ export default function App() {
       <form className="app-footer" onSubmit={onSubmit}>
         <div className="app-controls">
           <LunarBirthField
+            locale={locale}
             value={birthPicker}
             onChange={(iso) => {
               setBirthPicker(iso);
@@ -792,14 +846,14 @@ export default function App() {
                 setInput(e.target.value);
                 setSubmitHint("");
               }}
-              placeholder="生日或追问：19940308 / 内圈第三组是什么意思"
+              placeholder={t(locale, "placeholderInput")}
               disabled={busy}
               enterKeyHint="send"
               autoComplete="off"
               inputMode="text"
             />
             <button type="submit" className="app-send" disabled={busy}>
-              {busy ? "…" : "发送"}
+              {busy ? t(locale, "sendBusy") : t(locale, "send")}
             </button>
           </div>
           {submitHint ? (

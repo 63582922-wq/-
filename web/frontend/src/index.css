@@ -117,6 +117,35 @@ a:hover {
   border-bottom: 1px solid var(--border);
 }
 
+.app-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-header-row > div:first-child {
+  min-width: 0;
+}
+
+.app-lang-toggle {
+  flex-shrink: 0;
+  margin-top: 2px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.app-lang-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-hover);
+}
+
 .app-header h1 {
   font-size: clamp(1.05rem, 4vw, 1.2rem);
   font-weight: 600;

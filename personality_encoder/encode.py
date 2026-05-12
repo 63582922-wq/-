@@ -16,11 +16,33 @@ from pathlib import Path
 
 
 def digital_root(n: int) -> int:
-    """数位根 1–9；n 必须为正整数。"""
-    if n <= 0:
-        raise ValueError("digital_root 仅适用于正整数")
+    """数位根 1–9；n 必须为非负整数。"""
+    if n < 0:
+        raise ValueError("digital_root 仅适用于非负整数")
+    if n == 0:
+        return 0
     r = n % 9
     return 9 if r == 0 else r
+
+
+def get_keyword_for_pair(kn: dict, a: int, b: int, root: int) -> str:
+    if root == 0:
+        return ""
+    looked = pair_lookup(kn, a, b)
+    if looked and looked["digit_labels"]:
+        return "/".join(looked["digit_labels"])
+    fallback_keywords = {
+        "1": "坚固/承载",
+        "2": "流动/婉转",
+        "3": "发光/疗愈",
+        "4": "谨慎/整合",
+        "5": "转化/中枢",
+        "6": "稳健/完美",
+        "7": "通透/深藏",
+        "8": "力量/仗义",
+        "9": "超脱/开放",
+    }
+    return fallback_keywords.get(str(root), "")
 
 
 def add_nine(a: int, b: int) -> int:
@@ -176,15 +198,33 @@ def format_digit_block(kn: dict, d: int) -> list[str]:
 def format_pair_block(kn: dict, a: int, b: int) -> list[str] | None:
     root = str(pair_root(a, b))
     key = pair_key(a, b)
-    bucket = kn["pairs_by_root"].get(root)
-    if not bucket or key not in bucket:
+    looked = pair_lookup(kn, a, b)
+    if not looked:
         return None
-    info = bucket[key]
     return [
         f"两位数 {key} → 根数字 {root}（板书细分路径）",
-        f"数位标签：{' / '.join(info['digit_labels'])}",
-        "倾向摘录：" + "；".join(info["traits"]),
+        f"数位标签：{' / '.join(looked['digit_labels'])}",
+        "倾向摘录：" + "；".join(looked["traits"]),
     ]
+
+
+def pair_lookup(kn: dict, a: int, b: int) -> dict | None:
+    """返回 pairs_by_root 中的原始结构；ab / ba 视为同一路径。"""
+    root = str(pair_root(a, b))
+    bucket = kn["pairs_by_root"].get(root)
+    if not bucket:
+        return None
+    direct = pair_key(a, b)
+    reverse = pair_key(b, a)
+    info = bucket.get(direct) or bucket.get(reverse)
+    if not info:
+        return None
+    return {
+        "pair": direct,
+        "root": int(root),
+        "digit_labels": list(info.get("digit_labels", [])),
+        "traits": list(info.get("traits", [])),
+    }
 
 
 def extract_date_candidates(text: str) -> list[str]:
@@ -215,6 +255,14 @@ def extract_date_candidates(text: str) -> list[str]:
 
 
 def digit_record(kn: dict, digit: int) -> dict:
+    if digit == 0:
+        return {
+            "digit": 0,
+            "卦象节气时辰": "占位 0（原始日期位）",
+            "核心物理属性": "该位为原始日期中的 0，占位参与计算，不对应九图单独讲义。",
+            "阳面": [],
+            "阴面": [],
+        }
     block = kn["digits"][str(digit)]
     return {
         "digit": digit,
@@ -229,9 +277,18 @@ def pair_record(kn: dict, a: int, b: int) -> dict:
     """板书路径 + 是否命中九图。"""
     key = pair_key(a, b)
     root = pair_root(a, b)
+    looked = pair_lookup(kn, a, b)
     pb = format_pair_block(kn, a, b)
     if pb:
-        return {"pair": key, "root": root, "lines": pb, "in_chart": True}
+        return {
+            "pair": key,
+            "root": root,
+            "lines": pb,
+            "in_chart": True,
+            "digit_labels": looked["digit_labels"] if looked else [],
+            "traits": looked["traits"] if looked else [],
+            "board_image": f"/board-previews/{root}.jpeg",
+        }
     return {
         "pair": key,
         "root": root,
@@ -240,11 +297,89 @@ def pair_record(kn: dict, a: int, b: int) -> dict:
             "可综合下列单数字讲义条目口述整合。",
         ],
         "in_chart": False,
+        "digit_labels": [],
+        "traits": [],
+        "board_image": f"/board-previews/{root}.jpeg",
         "fallback_digits": [
             digit_record(kn, a),
             digit_record(kn, b),
             digit_record(kn, root),
         ],
+    }
+
+
+def visualization_node(kn: dict, node_id: str, a: int, b: int, result: int) -> dict:
+    rec = pair_record(kn, a, b)
+    def _digit_preview(d: int) -> dict:
+        res = digit_record(kn, d)
+        labels: list[str] = []
+        for k in ("卦象节气时辰", "核心物理属性"):
+            v = res.get(k)
+            if isinstance(v, str) and v.strip():
+                labels.append(v.strip())
+        lines: list[str] = []
+        for s in (res.get("阳面") or [])[:2]:
+            if isinstance(s, str) and s.strip():
+                lines.append(f"阳面：{s.strip()}")
+        for s in (res.get("阴面") or [])[:2]:
+            if isinstance(s, str) and s.strip():
+                lines.append(f"阴面：{s.strip()}")
+        return {"digit": int(res.get("digit", d)), "labels": labels, "lines": lines}
+
+    res_record = _digit_preview(result)
+    source_records = [_digit_preview(a), _digit_preview(b)]
+    return {
+        "id": node_id,
+        "source_pair": rec["pair"],
+        "source_digits": [a, b],
+        "result_digit": result,
+        "digit_labels": rec.get("digit_labels", []),
+        "traits": rec.get("traits", []),
+        "in_chart": rec["in_chart"],
+        "board_image": rec["board_image"],
+        "lines": rec["lines"],
+        "result_record": res_record,
+        "source_records": source_records,
+    }
+
+
+def build_visualization_payload(kn: dict, tr: TriangleResult) -> dict:
+    b8 = tr.boxes8
+    ib = tr.inner_bottom
+    return {
+        "boxes8": list(b8),
+        "pair_bottom": [
+            visualization_node(kn, "pair0", b8[0], b8[1], ib[0]),
+            visualization_node(kn, "pair1", b8[2], b8[3], ib[1]),
+            visualization_node(kn, "pair2", b8[4], b8[5], ib[2]),
+            visualization_node(kn, "pair3", b8[6], b8[7], ib[3]),
+        ],
+        "inner_bottom": [
+            visualization_node(kn, "ib0", b8[0], b8[1], ib[0]),
+            visualization_node(kn, "ib1", b8[2], b8[3], ib[1]),
+            visualization_node(kn, "ib2", b8[4], b8[5], ib[2]),
+            visualization_node(kn, "ib3", b8[6], b8[7], ib[3]),
+        ],
+        "inner_mid": [
+            visualization_node(kn, "ml", ib[0], ib[1], tr.inner_ml),
+            visualization_node(kn, "mr", ib[2], ib[3], tr.inner_mr),
+        ],
+        "inner_top": visualization_node(kn, "top", tr.inner_ml, tr.inner_mr, tr.inner_top),
+        "outer_left": [
+            visualization_node(kn, "ol0", ib[0], tr.inner_ml, tr.outer_left_lower),
+            visualization_node(kn, "ol1", ib[1], tr.inner_ml, tr.outer_left_upper),
+            visualization_node(kn, "ol2", tr.outer_left_lower, tr.outer_left_upper, tr.outer_left_top),
+        ],
+        "outer_right": [
+            visualization_node(kn, "or0", ib[2], tr.inner_mr, tr.outer_right_lower),
+            visualization_node(kn, "or1", ib[3], tr.inner_mr, tr.outer_right_upper),
+            visualization_node(kn, "or2", tr.outer_right_lower, tr.outer_right_upper, tr.outer_right_top),
+        ],
+        "top_cross": [
+            visualization_node(kn, "down0", tr.inner_mr, tr.inner_top, tr.cross_page_left),
+            visualization_node(kn, "down1", tr.inner_ml, tr.inner_top, tr.cross_page_right),
+        ],
+        "apex_outer": visualization_node(kn, "down2", tr.cross_page_left, tr.cross_page_right, tr.apex_outer),
     }
 
 
@@ -771,21 +906,53 @@ def build_web_payload(y: int, m: int, d: int, kn: dict, *, locale: str = "zh") -
         "triangle": {
             "boxes8": list(tr.boxes8),
             "inner_bottom": list(tr.inner_bottom),
+            "inner_bottom_kw": [
+                get_keyword_for_pair(kn, tr.boxes8[0], tr.boxes8[1], tr.inner_bottom[0]),
+                get_keyword_for_pair(kn, tr.boxes8[2], tr.boxes8[3], tr.inner_bottom[1]),
+                get_keyword_for_pair(kn, tr.boxes8[4], tr.boxes8[5], tr.inner_bottom[2]),
+                get_keyword_for_pair(kn, tr.boxes8[6], tr.boxes8[7], tr.inner_bottom[3]),
+            ],
             "inner_mid_lr": [tr.inner_ml, tr.inner_mr],
+            "inner_mid_lr_kw": [
+                get_keyword_for_pair(kn, tr.inner_bottom[0], tr.inner_bottom[1], tr.inner_ml),
+                get_keyword_for_pair(kn, tr.inner_bottom[2], tr.inner_bottom[3], tr.inner_mr),
+            ],
             "inner_top": tr.inner_top,
+            "inner_top_kw": get_keyword_for_pair(kn, tr.inner_ml, tr.inner_mr, tr.inner_top),
             "outer_left_col": [
                 tr.outer_left_lower,
                 tr.outer_left_upper,
                 tr.outer_left_top,
+            ],
+            "outer_left_col_kw": [
+                get_keyword_for_pair(kn, tr.inner_bottom[0], tr.inner_ml, tr.outer_left_lower),
+                get_keyword_for_pair(kn, tr.inner_bottom[1], tr.inner_ml, tr.outer_left_upper),
+                get_keyword_for_pair(kn, tr.outer_left_lower, tr.outer_left_upper, tr.outer_left_top),
             ],
             "outer_right_col": [
                 tr.outer_right_lower,
                 tr.outer_right_upper,
                 tr.outer_right_top,
             ],
+            "outer_right_col_kw": [
+                get_keyword_for_pair(kn, tr.inner_bottom[2], tr.inner_mr, tr.outer_right_lower),
+                get_keyword_for_pair(kn, tr.inner_bottom[3], tr.inner_mr, tr.outer_right_upper),
+                get_keyword_for_pair(kn, tr.outer_right_lower, tr.outer_right_upper, tr.outer_right_top),
+            ],
             "top_cross_page_lr": [tr.cross_page_left, tr.cross_page_right],
+            "top_cross_page_lr_kw": [
+                get_keyword_for_pair(kn, tr.inner_mr, tr.inner_top, tr.cross_page_left),
+                get_keyword_for_pair(kn, tr.inner_ml, tr.inner_top, tr.cross_page_right),
+            ],
             "apex_outer": tr.apex_outer,
+            "apex_outer_kw": get_keyword_for_pair(
+                kn,
+                tr.cross_page_left,
+                tr.cross_page_right,
+                tr.apex_outer,
+            ),
         },
+        "visualization": build_visualization_payload(kn, tr),
         "fusion_codes_outer3": [
             groups[0]["code"],
             groups[1]["code"],
@@ -831,20 +998,51 @@ def build_report(
             "triangle": {
                 "boxes8": list(tr.boxes8),
                 "inner_bottom": list(tr.inner_bottom),
+                "inner_bottom_kw": [
+                    get_keyword_for_pair(kn, tr.boxes8[0], tr.boxes8[1], tr.inner_bottom[0]),
+                    get_keyword_for_pair(kn, tr.boxes8[2], tr.boxes8[3], tr.inner_bottom[1]),
+                    get_keyword_for_pair(kn, tr.boxes8[4], tr.boxes8[5], tr.inner_bottom[2]),
+                    get_keyword_for_pair(kn, tr.boxes8[6], tr.boxes8[7], tr.inner_bottom[3]),
+                ],
                 "inner_mid_lr": [tr.inner_ml, tr.inner_mr],
+                "inner_mid_lr_kw": [
+                    get_keyword_for_pair(kn, tr.inner_bottom[0], tr.inner_bottom[1], tr.inner_ml),
+                    get_keyword_for_pair(kn, tr.inner_bottom[2], tr.inner_bottom[3], tr.inner_mr),
+                ],
                 "inner_top": tr.inner_top,
+                "inner_top_kw": get_keyword_for_pair(kn, tr.inner_ml, tr.inner_mr, tr.inner_top),
                 "outer_left_col": [
                     tr.outer_left_lower,
                     tr.outer_left_upper,
                     tr.outer_left_top,
+                ],
+                "outer_left_col_kw": [
+                    get_keyword_for_pair(kn, tr.inner_bottom[0], tr.inner_ml, tr.outer_left_lower),
+                    get_keyword_for_pair(kn, tr.inner_bottom[1], tr.inner_ml, tr.outer_left_upper),
+                    get_keyword_for_pair(kn, tr.outer_left_lower, tr.outer_left_upper, tr.outer_left_top),
                 ],
                 "outer_right_col": [
                     tr.outer_right_lower,
                     tr.outer_right_upper,
                     tr.outer_right_top,
                 ],
+                "outer_right_col_kw": [
+                    get_keyword_for_pair(kn, tr.inner_bottom[2], tr.inner_mr, tr.outer_right_lower),
+                    get_keyword_for_pair(kn, tr.inner_bottom[3], tr.inner_mr, tr.outer_right_upper),
+                    get_keyword_for_pair(kn, tr.outer_right_lower, tr.outer_right_upper, tr.outer_right_top),
+                ],
                 "top_cross_page_lr": [tr.cross_page_left, tr.cross_page_right],
+                "top_cross_page_lr_kw": [
+                    get_keyword_for_pair(kn, tr.inner_mr, tr.inner_top, tr.cross_page_left),
+                    get_keyword_for_pair(kn, tr.inner_ml, tr.inner_top, tr.cross_page_right),
+                ],
                 "apex_outer": tr.apex_outer,
+                "apex_outer_kw": get_keyword_for_pair(
+                    kn,
+                    tr.cross_page_left,
+                    tr.cross_page_right,
+                    tr.apex_outer,
+                ),
             },
             "fusion_codes_outer3": [
                 "".join(map(str, codes[0])),

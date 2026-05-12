@@ -67,6 +67,16 @@ def compact_payload_for_llm(
     payload: dict, *, include_official_template: bool = True
 ) -> Dict[str, Any]:
     """压缩传给模型的上下文，减少 token。"""
+    def _short_label(x: Any) -> Any:
+        if not isinstance(x, str):
+            return x
+        s = x.strip()
+        if "（" in s:
+            s = s.split("（", 1)[0].strip()
+        if "(" in s:
+            s = s.split("(", 1)[0].strip()
+        return s
+
     def _groups(gs):
         return [
             {
@@ -79,20 +89,22 @@ def compact_payload_for_llm(
             for g in gs or []
         ]
 
+    outer_labels = [_short_label(x) for x in (payload.get("fusion_labels") or [])]
+    inner_labels = ["内核一", "内核二", "内核三"]
+
     out: Dict[str, Any] = {
         "birth": payload.get("birth"),
         "triangle_inner_top": payload.get("triangle", {}).get("inner_top"),
         "triangle_boxes8": payload.get("triangle", {}).get("boxes8"),
         "fusion_codes_outer": payload.get("fusion_codes_outer3"),
-        "fusion_labels_outer": payload.get("fusion_labels"),
+        "fusion_labels_outer": outer_labels,
         "fusion_codes_inner": payload.get("fusion_codes_inner3"),
-        "fusion_labels_inner": payload.get("fusion_inner_labels"),
+        "fusion_labels_inner": inner_labels,
         "interpretation_frame": payload.get("interpretation_frame"),
         "inner_top_digit": payload.get("inner_top_digit"),
         "inner_fusion_groups": _groups(payload.get("inner_fusion_groups")),
         "outer_fusion_groups": _groups(payload.get("fusion_groups")),
         "fusion_groups": _groups(payload.get("fusion_groups")),
-        "algorithm_note": payload.get("algorithm_note"),
         "disclaimer": payload.get("disclaimer"),
     }
     if include_official_template:
@@ -100,26 +112,40 @@ def compact_payload_for_llm(
     return out
 
 
-FULL_REPORT_SYSTEM_PROMPT = """你是性格隐喻工作坊的写作助手。根据随后给出的结构化测算材料，写一段给当事人看的「个性简述」，全文为简体中文。
+FULL_REPORT_SYSTEM_PROMPT = """
+你是一名在线心理咨询的“咨询师助理”。输出对象是咨询师本人：帮助咨询师快速理解本系统的测算结果与结构化含义，用于辅助评估与沟通（不是长篇故事、不是科普、不要赘述）。
 
-【写什么】
-用连贯、好读的一小段或多小段散文（不必列表、不必按「第几行」排版），概括其气质与行为倾向。材料中的公历生日、三角形顶点底色数字、外圈三组融合码及中文标签、内圈三组融合码及中文标签须在文中**自然点明且与材料完全一致**（数字与码不可错，标签须用材料原文）。可融入讲义里「形」所带的阳面、阴面意味，融入叙述即可，**不必**机械套用「阳面：」「阴面：」标签式逐条罗列。若材料中有「解读框架」段落，可内化进叙述，勿整段照抄。
+【绝对禁令】
+1) 绝对不要出现任何“左圈、右圈、内圈、顶点、底色、形质、数位、九进制、归约、三角”等算法或排布词。
+2) 不要把 JSON 字段名、snake_case、英文键名写进正文；不要输出 Markdown 或代码块。
+3) 不要写成文学散文或长篇心理小作文；不做诊断、不贴病理标签，用“可能/常见/在压力下容易”等表述。
 
-【禁止】
-正文出现半角英文或下划线式材料键名；Markdown 与代码块；写作过程、自我检讨、「根据提示」「以下是」等元叙述；编造材料中没有的码或说法；有序号列表（1.2.3.）。
+【输出格式（按以下顺序；不要用 A/B/C；不要写“咨询师该怎么问”）】
+1) 一句话总览（30–60 字）：概括此人的核心动力与常见风格。
+2) 对外（工作/陌生社交）：
+   - 顺的时候：2–3 句（可观察行为）
+   - 紧的时候（压力大时）：1–2 句（容易走偏到哪里）
+   - 例子（工作场景）：用 4 句写清楚【触发情境→典型反应→他人感受/误会点→更顺的替代表现】。
+3) 对内（伴侣/家人/亲密关系）：同上（含 1 个家庭/亲密场景例子）。
+4) 对下（带新人/下属/孩子/后辈）：同上（含 1 个带人场景例子）。
+5) 三组内核对照（短语版）：用 3 行列出“内核一/内核二/内核三”各自的关键词（每行 ≤ 10 字）。
+6) 优势（好用的长处）：3–5 条（每条一句，偏行为与沟通层面的可用点）。
+7) 容易卡住的点（踩坑点）：3–5 条（每条一句，偏行为与关系层面的风险点）。
+8) 结语一句（≤ 20 字）：温和收束。
 
-【篇幅与语气】
-约三百至六百字；语气温和克制，拿不准的用「往往」「有时」等弹性表述。可自然收束，无固定套话要求。"""
+【篇幅与语言】
+总字数控制在 600–900 字；分段清楚，句子短，信息密度高，适合在线咨询快速阅读与复述。
+"""
 
 
-FOLLOWUP_SYSTEM_PROMPT = """你是同一工作坊的对话助理。用户已看过首轮的「个性简述」，现在继续聊天追问。
+FOLLOWUP_SYSTEM_PROMPT = """你是在线心理咨询的“咨询师助理”。用户已看过首轮的「咨询速用稿」，现在继续追问。
 
 【事实约束】
 系统消息里的测算材料中的生日、融合码、中文标签须保持一致，不得编造新材料或改码。
 
 【回答方式】
-只针对用户最后一条里的问题作答，用自然口语，默认两三句到一小段即可，除非用户明确要求长文。
-不要整篇重写首轮简述，除非用户明确要求再总结一遍；不要输出写作计划、字数说明或对系统说明的复述；不要输出 Markdown 或代码块。
+只针对用户最后一条里的问题作答，默认 4–10 句以内，给结构化解释与要点归纳，可用 1 个小例子帮助理解，但不要长篇赘述。
+不要整篇重写首轮速用稿，除非用户明确要求再总结一遍；不要输出写作计划、字数说明或对系统说明的复述；不要输出 Markdown 或代码块。
 
 【材料使用】
 材料仅供核对事实；用你自己的话简要回应，不要把材料整段贴回。"""
@@ -354,8 +380,8 @@ def generate_full_ai_report(payload: dict, *, locale: str = "zh") -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
         ],
-        max_tokens=1400,
-        temperature=0.52,
+        max_tokens=1200,
+        temperature=0.45,
     )
     return _sanitize_full_report_output(raw) if not is_en else _sanitize_full_report_output_en(raw)
 

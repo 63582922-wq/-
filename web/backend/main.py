@@ -1,8 +1,9 @@
 """
 性格编码智能体 API：供 Web 前端调用，解读逻辑全部来自 personality_encoder（确定性知识库）。
 
-手机访问同一 Wi‑Fi：勿仅用 --host 127.0.0.1（外网设备连不上）。
-请使用 --host 0.0.0.0，或运行仓库根目录 scripts/serve-lan.sh。
+监听请使用 --host 0.0.0.0（手机等同 Wi‑Fi 设备才能连上），但本机浏览器请打开
+http://127.0.0.1:8000 或 http://localhost:8000，勿用 http://0.0.0.0:8000（Chrome 会报
+跨域/安全错误或与 chrome-error:// 冲突）。手机仍用 http://<本机局域网 IP>:8000。
 """
 
 from __future__ import annotations
@@ -74,6 +75,16 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Reply-Source"],
 )
+
+
+@app.middleware("http")
+async def _redirect_browser_from_zero_host(request: Request, call_next):
+    """0.0.0.0 仅作监听地址；本机用该 Host 访问时 Chrome 常拒绝，统一改跳到 127.0.0.1。"""
+    host = (request.headers.get("host") or "").strip().lower()
+    if host.startswith("0.0.0.0:"):
+        url = str(request.url).replace("://0.0.0.0:", "://127.0.0.1:", 1)
+        return RedirectResponse(url=url, status_code=307)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -258,7 +269,7 @@ def api_status():
         "ai_key_configured": key_ok,
         "repo_root": str(ROOT),
         "process_cwd": str(Path.cwd()),
-        "hint": "代码或 .env 变更后必须重启 uvicorn；手机请访问 http://<本机局域网IP>:8000 并必要时关掉后台 Tab。",
+        "hint": "本机请用 http://127.0.0.1:8000 打开页面，勿用 http://0.0.0.0:8000。代码或 .env 变更后须重启 uvicorn；手机请访问 http://<本机局域网IP>:8000。",
     }
 
 

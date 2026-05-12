@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState, useRef, lazy, Suspense } from "react";
 import { messageHasExtractableBirthDate } from "./date-parse";
 import {
   LOCALE_STORAGE_KEY,
@@ -7,6 +7,10 @@ import {
   t,
 } from "./i18n";
 import LunarBirthField from "./lunar-birth-field";
+import type { TriangleData } from "./TriangleVisualizer";
+import { SendHorizontal } from "lucide-react";
+
+const TriangleVisualizer = lazy(() => import("./TriangleVisualizer"));
 
 /** 须与 web/backend/main.py 中 API_BUILD_MARK 保持一致 */
 const EXPECTED_API_BUILD_MARK = "reply-source-v9";
@@ -40,6 +44,7 @@ type FusionGroup = {
 type AgentPayload = {
   birth: { y: number; m: number; d: number };
   triangle: Record<string, unknown>;
+  visualization?: TriangleData;
   fusion_codes_outer3: string[];
   fusion_codes_inner3?: string[];
   fusion_labels: string[];
@@ -84,8 +89,109 @@ type ChatMessage = {
 
 type ChatTurnApi = { role: "user" | "assistant"; content: string };
 
+const CASES_STORAGE_KEY = "xgbm_cases_v1";
+const ACTIVE_CASE_STORAGE_KEY = "xgbm_active_case_v1";
+
+type CaseSession = {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  title: string;
+  hasStarted: boolean;
+  messages: ChatMessage[];
+  lockedBirthIso: string;
+  birthPicker: string;
+};
+
+type CaseStore = {
+  activeCaseId: string;
+  cases: CaseSession[];
+};
+
 function formatBirthIso(b: { y: number; m: number; d: number }): string {
   return `${b.y}-${String(b.m).padStart(2, "0")}-${String(b.d).padStart(2, "0")}`;
+}
+
+function genCaseId(): string {
+  const g = typeof crypto !== "undefined" ? crypto : null;
+  const uuid = g && typeof g.randomUUID === "function" ? g.randomUUID() : "";
+  if (uuid) return uuid;
+  return `case_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function makeWelcomeMessage(locale: Locale): ChatMessage {
+  return { role: "assistant", content: t(locale, "welcomeIntro") };
+}
+
+function newCaseSession(locale: Locale): CaseSession {
+  const now = Date.now();
+  return {
+    id: genCaseId(),
+    createdAt: now,
+    updatedAt: now,
+    title: locale === "zh" ? "未命名案例" : "Untitled case",
+    hasStarted: false,
+    messages: [makeWelcomeMessage(locale)],
+    lockedBirthIso: "",
+    birthPicker: "",
+  };
+}
+
+function normalizeLoadedCase(raw: unknown, locale: Locale): CaseSession | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === "string" ? o.id : genCaseId();
+  const createdAt = typeof o.createdAt === "number" ? o.createdAt : Date.now();
+  const updatedAt = typeof o.updatedAt === "number" ? o.updatedAt : createdAt;
+  const title =
+    typeof o.title === "string"
+      ? o.title
+      : locale === "zh"
+        ? "未命名案例"
+        : "Untitled case";
+  const hasStarted = Boolean(o.hasStarted);
+  const lockedBirthIso = typeof o.lockedBirthIso === "string" ? o.lockedBirthIso : "";
+  const birthPicker = typeof o.birthPicker === "string" ? o.birthPicker : "";
+  const messagesRaw = o.messages;
+  const messages =
+    Array.isArray(messagesRaw) && messagesRaw.length > 0
+      ? (messagesRaw as ChatMessage[])
+      : [makeWelcomeMessage(locale)];
+  return {
+    id,
+    createdAt,
+    updatedAt,
+    title,
+    hasStarted,
+    messages,
+    lockedBirthIso,
+    birthPicker,
+  };
+}
+
+function loadCaseStore(locale: Locale): CaseStore {
+  if (typeof window === "undefined") {
+    const c = newCaseSession(locale);
+    return { activeCaseId: c.id, cases: [c] };
+  }
+  try {
+    const raw = window.localStorage.getItem(CASES_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    const list = Array.isArray(parsed) ? parsed : [];
+    const cases = list
+      .map((x) => normalizeLoadedCase(x, locale))
+      .filter(Boolean) as CaseSession[];
+    const fallback = cases.length > 0 ? cases : [newCaseSession(locale)];
+    const storedActive = window.localStorage.getItem(ACTIVE_CASE_STORAGE_KEY) ?? "";
+    const activeCaseId =
+      storedActive && fallback.some((c) => c.id === storedActive)
+        ? storedActive
+        : fallback[0].id;
+    return { activeCaseId, cases: fallback };
+  } catch {
+    const c = newCaseSession(locale);
+    return { activeCaseId: c.id, cases: [c] };
+  }
 }
 
 /** 供给 /api/chat 的 history：不含当前正在发送的这一条用户话。 */
@@ -419,27 +525,111 @@ function bubbleClass(msg: ChatMessage): string {
 
 export default function App() {
   const [locale, setLocale] = useState<Locale>(() => readStoredLocale());
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [
-    { role: "assistant", content: t(readStoredLocale(), "welcomeIntro") },
-  ]);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const raw = window.localStorage.getItem("xgbm_theme");
+    return raw === "light" ? "light" : "dark";
+  });
+  const [caseStore, setCaseStore] = useState<CaseStore>(() =>
+    loadCaseStore(readStoredLocale()),
+  );
   const [input, setInput] = useState("");
-  /** 最近一次成功测算的阳历 ISO，用于无日期时的追问与重算。 */
-  const [lockedBirthIso, setLockedBirthIso] = useState("");
-  const [birthPicker, setBirthPicker] = useState("");
   const [busy, setBusy] = useState(false);
   const [submitHint, setSubmitHint] = useState("");
   const [backendBanner, setBackendBanner] = useState<string | null>(null);
+
+  const activeCase = useMemo(() => {
+    const found = caseStore.cases.find((c) => c.id === caseStore.activeCaseId);
+    return found ?? caseStore.cases[0];
+  }, [caseStore]);
+
+  const activeCaseRef = useRef<CaseSession>(activeCase);
+  const activeCaseIdRef = useRef<string>(caseStore.activeCaseId);
+  useEffect(() => {
+    activeCaseRef.current = activeCase;
+    activeCaseIdRef.current = caseStore.activeCaseId;
+  }, [activeCase, caseStore.activeCaseId]);
+
+  const hasStarted = activeCase.hasStarted;
+  const messages = activeCase.messages;
+  const lockedBirthIso = activeCase.lockedBirthIso;
+  const birthPicker = activeCase.birthPicker;
+
+  function updateCaseById(caseId: string, updater: (c: CaseSession) => CaseSession) {
+    setCaseStore((prev) => {
+      const nextCases = prev.cases.map((c) => {
+        if (c.id !== caseId) return c;
+        const next = updater(c);
+        return { ...next, updatedAt: Date.now() };
+      });
+      return { ...prev, cases: nextCases };
+    });
+  }
+
+  function updateActiveCase(updater: (c: CaseSession) => CaseSession) {
+    const caseId = activeCaseIdRef.current;
+    updateCaseById(caseId, updater);
+  }
+
+  function startNewCaseAndActivate(): string {
+    const c = newCaseSession(locale);
+    setCaseStore((prev) => ({
+      activeCaseId: c.id,
+      cases: [c, ...prev.cases],
+    }));
+    return c.id;
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(CASES_STORAGE_KEY, JSON.stringify(caseStore.cases));
+      window.localStorage.setItem(ACTIVE_CASE_STORAGE_KEY, caseStore.activeCaseId);
+    } catch {
+      /* ignore */
+    }
+  }, [caseStore]);
+
+  // 引用最新成功的 payload 供左侧可视化使用
+  const latestPayload = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].payload) {
+        return messages[i].payload;
+      }
+    }
+    return null;
+  }, [messages]);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    if (hasStarted) {
+      scrollToBottom();
+    }
+  }, [messages, hasStarted]);
 
   function flipLocale() {
     const next: Locale = locale === "zh" ? "en" : "zh";
     setLocale(next);
     window.localStorage.setItem(LOCALE_STORAGE_KEY, next);
-    setMessages((prev) => {
-      if (prev.length === 1 && prev[0].role === "assistant" && !prev[0].payload) {
-        return [{ role: "assistant", content: t(next, "welcomeIntro") }];
+    updateActiveCase((c) => {
+      if (c.messages.length === 1 && c.messages[0].role === "assistant" && !c.messages[0].payload) {
+        return { ...c, messages: [makeWelcomeMessage(next)] };
       }
-      return prev;
+      return c;
     });
+  }
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("xgbm_theme", theme);
+  }, [theme]);
+
+  function flipTheme() {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   }
 
   useEffect(() => {
@@ -470,12 +660,13 @@ export default function App() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
-    const iso = birthPicker.trim();
+    const current = activeCaseRef.current;
+    const iso = current.birthPicker.trim();
     const hasDateInMessage = messageHasExtractableBirthDate(text);
     const canResolveBirth =
       hasDateInMessage ||
       Boolean(iso) ||
-      (Boolean(lockedBirthIso) && Boolean(text) && !hasDateInMessage);
+      (Boolean(current.lockedBirthIso) && Boolean(text) && !hasDateInMessage);
     if (!canResolveBirth) {
       setSubmitHint(t(locale, "submitHintNoBirth"));
       return;
@@ -486,40 +677,80 @@ export default function App() {
       return;
     }
     setSubmitHint("");
+    let targetCaseId = activeCaseIdRef.current;
+    const needNewCase = Boolean(current.hasStarted && hasDateInMessage);
+    if (needNewCase) {
+      const c = newCaseSession(locale);
+      const seeded: CaseSession = {
+        ...c,
+        hasStarted: true,
+        messages: [
+          ...c.messages,
+          { role: "user", content: userLine },
+          {
+            role: "assistant",
+            content: t(locale, "loadingLocal"),
+            loading: true,
+            step: "local_compute",
+          },
+        ],
+      };
+      targetCaseId = seeded.id;
+      setCaseStore((prev) => ({
+        activeCaseId: seeded.id,
+        cases: [seeded, ...prev.cases],
+      }));
+    } else {
+      updateCaseById(targetCaseId, (c) => ({ ...c, hasStarted: true }));
+    }
 
-    const birthFromPicker = hasDateInMessage ? "" : text ? lockedBirthIso || iso : iso;
+    const birthFromPicker = hasDateInMessage
+      ? ""
+      : text
+        ? current.lockedBirthIso || iso
+        : iso;
     const followUpOnly =
-      Boolean(lockedBirthIso) && Boolean(text) && !hasDateInMessage;
+      Boolean(current.lockedBirthIso) && Boolean(text) && !hasDateInMessage && !needNewCase;
 
-    const historyForApi = buildApiHistory(messages);
+    const historyForApi = needNewCase ? [] : buildApiHistory(current.messages);
 
     const stripLoading = (prev: ChatMessage[]) =>
       prev.filter((m) => !(m.role === "assistant" && m.loading));
 
     if (followUpOnly) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content: userLine },
-        {
-          role: "assistant",
-          content: t(locale, "loadingReply"),
-          loading: true,
-          step: "ai_loading",
-        },
-      ]);
+      updateCaseById(targetCaseId, (c) => ({
+        ...c,
+        messages: [
+          ...c.messages,
+          { role: "user", content: userLine },
+          {
+            role: "assistant",
+            content: t(locale, "loadingReply"),
+            loading: true,
+            step: "ai_loading",
+          },
+        ],
+      }));
       setInput("");
       setBusy(true);
       try {
-        const first = await fetchLocalPayload(text, lockedBirthIso, locale);
+        const first = await fetchLocalPayload(text, current.lockedBirthIso, locale);
         if (!first.ok) {
-          setMessages((prev) => [
-            ...stripLoading(prev),
-            { role: "assistant", content: "", error: first.error },
-          ]);
+          updateCaseById(targetCaseId, (c) => ({
+            ...c,
+            messages: [
+              ...stripLoading(c.messages),
+              { role: "assistant", content: "", error: first.error },
+            ],
+          }));
           return;
         }
         const birthThisRound = formatBirthIso(first.payload.birth);
-        setLockedBirthIso(birthThisRound);
+        updateCaseById(targetCaseId, (c) => ({
+          ...c,
+          lockedBirthIso: birthThisRound,
+          title: birthThisRound,
+        }));
         const reply = await sendChat({
           message: text,
           birthDate: birthThisRound,
@@ -527,44 +758,55 @@ export default function App() {
           clientFollowup: true,
           locale,
         });
-        setMessages((prev) => [
-          ...stripLoading(prev),
-          {
-            role: "assistant",
-            step: "followup_chat",
-            payload: first.payload,
-            content: reply.content,
-            error: reply.error,
-            modelWarning: reply.modelWarning,
-            replySource: reply.replySource,
-            generationMeta: reply.generationMeta,
-          },
-        ]);
+        updateCaseById(targetCaseId, (c) => ({
+          ...c,
+          messages: [
+            ...stripLoading(c.messages),
+            {
+              role: "assistant",
+              step: "followup_chat",
+              payload: first.payload,
+              content: reply.content,
+              error: reply.error,
+              modelWarning: reply.modelWarning,
+              replySource: reply.replySource,
+              generationMeta: reply.generationMeta,
+            },
+          ],
+        }));
       } catch {
-        setMessages((prev) => [
-          ...stripLoading(prev),
-          {
-            role: "assistant",
-            content: "",
-            error: t(locale, "networkError"),
-          },
-        ]);
+        updateCaseById(targetCaseId, (c) => ({
+          ...c,
+          messages: [
+            ...stripLoading(c.messages),
+            {
+              role: "assistant",
+              content: "",
+              error: t(locale, "networkError"),
+            },
+          ],
+        }));
       } finally {
         setBusy(false);
       }
       return;
     }
 
-    setMessages((prev) => [
-      ...prev,
-      { role: "user", content: userLine },
-      {
-        role: "assistant",
-        content: t(locale, "loadingLocal"),
-        loading: true,
-        step: "local_compute",
-      },
-    ]);
+    if (!needNewCase) {
+      updateCaseById(targetCaseId, (c) => ({
+        ...c,
+        messages: [
+          ...c.messages,
+          { role: "user", content: userLine },
+          {
+            role: "assistant",
+            content: t(locale, "loadingLocal"),
+            loading: true,
+            step: "local_compute",
+          },
+        ],
+      }));
+    }
     setInput("");
     setBusy(true);
     let localPayload: AgentPayload | undefined;
@@ -572,33 +814,38 @@ export default function App() {
     try {
       const first = await fetchLocalPayload(text, birthFromPicker, locale);
       if (!first.ok) {
-        setMessages((prev) => [
-          ...stripLoading(prev),
-          { role: "assistant", content: "", error: first.error },
-        ]);
+        updateCaseById(targetCaseId, (c) => ({
+          ...c,
+          messages: [
+            ...stripLoading(c.messages),
+            { role: "assistant", content: "", error: first.error },
+          ],
+        }));
         return;
       }
       localPayload = first.payload;
-      setLockedBirthIso(formatBirthIso(first.payload.birth));
-      setMessages((prev) => [
-        ...stripLoading(prev),
-        {
-          role: "assistant",
-          payload: first.payload,
-          content: "",
-          step: "local_result",
-        },
-      ]);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: t(locale, "loadingAi"),
-          loading: true,
-          step: "ai_loading",
-        },
-      ]);
+      const locked = formatBirthIso(first.payload.birth);
+      updateCaseById(targetCaseId, (c) => ({
+        ...c,
+        lockedBirthIso: locked,
+        title: locked,
+        birthPicker: "",
+        messages: [
+          ...stripLoading(c.messages),
+          {
+            role: "assistant",
+            payload: first.payload,
+            content: "",
+            step: "local_result",
+          },
+          {
+            role: "assistant",
+            content: t(locale, "loadingAi"),
+            loading: true,
+            step: "ai_loading",
+          },
+        ],
+      }));
 
       const reply = await sendChat({
         message: text,
@@ -607,8 +854,8 @@ export default function App() {
         clientFollowup: false,
         locale,
       });
-      setMessages((prev) => {
-        const rest = stripLoading(prev);
+      updateCaseById(targetCaseId, (c) => {
+        const rest = stripLoading(c.messages);
         const tail = rest[rest.length - 1];
         const head = rest.slice(0, -1);
         if (tail?.step === "local_result" && tail.payload) {
@@ -622,43 +869,52 @@ export default function App() {
             replySource: reply.replySource,
             generationMeta: reply.generationMeta,
           };
-          return [...head, merged];
+          return { ...c, messages: [...head, merged] };
         }
-        return [
-          ...rest,
-          {
-            ...reply,
-            payload: reply.payload ?? localPayload,
-            step: "combined_report",
-          },
-        ];
+        return {
+          ...c,
+          messages: [
+            ...rest,
+            {
+              ...reply,
+              payload: reply.payload ?? localPayload,
+              step: "combined_report",
+            },
+          ],
+        };
       });
     } catch {
-      setMessages((prev) => {
-        const rest = stripLoading(prev);
+      updateCaseById(targetCaseId, (c) => {
+        const rest = stripLoading(c.messages);
         const tail = rest[rest.length - 1];
         const head = rest.slice(0, -1);
         if (tail?.step === "local_result" && tail.payload) {
-          return [
-            ...head,
+          return {
+            ...c,
+            messages: [
+              ...head,
+              {
+                role: "assistant",
+                step: "combined_report",
+                payload: tail.payload,
+                content: "",
+                error: t(locale, "networkError"),
+              },
+            ],
+          };
+        }
+        return {
+          ...c,
+          messages: [
+            ...rest,
             {
               role: "assistant",
-              step: "combined_report",
-              payload: tail.payload,
               content: "",
               error: t(locale, "networkError"),
+              payload: localPayload,
             },
-          ];
-        }
-        return [
-          ...rest,
-          {
-            role: "assistant",
-            content: "",
-            error: t(locale, "networkError"),
-            payload: localPayload,
-          },
-        ];
+          ],
+        };
       });
     } finally {
       setBusy(false);
@@ -666,21 +922,61 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${hasStarted ? "app-started" : "app-landing"}`}>
       <header className="app-header">
         <div className="app-header-row">
           <div>
             <h1>{t(locale, "headerTitle")}</h1>
             <p>{t(locale, "headerSubtitle")}</p>
           </div>
-          <button
-            type="button"
-            className="app-lang-toggle"
-            onClick={flipLocale}
-            aria-label={locale === "zh" ? "Switch to English" : "切换到中文"}
-          >
-            {locale === "zh" ? t(locale, "langToEn") : t(locale, "langToZh")}
-          </button>
+          <div className="app-header-actions">
+            <select
+              className="app-case-select"
+              value={caseStore.activeCaseId}
+              onChange={(e) => {
+                const id = e.target.value;
+                setCaseStore((prev) => ({ ...prev, activeCaseId: id }));
+                setSubmitHint("");
+              }}
+              aria-label={locale === "zh" ? "切换案例" : "Switch case"}
+            >
+              {caseStore.cases
+                .slice()
+                .sort((a, b) => b.updatedAt - a.updatedAt)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title || (locale === "zh" ? "未命名案例" : "Untitled case")}
+                  </option>
+                ))}
+            </select>
+            <button
+              type="button"
+              className="app-case-new"
+              onClick={() => {
+                startNewCaseAndActivate();
+                setInput("");
+                setSubmitHint("");
+              }}
+            >
+              {locale === "zh" ? "新案例" : "New"}
+            </button>
+            <button
+              type="button"
+              className="app-theme-toggle"
+              onClick={flipTheme}
+              aria-label={theme === "dark" ? "Switch to light mode" : "切换到夜间模式"}
+            >
+              {theme === "dark" ? (locale === "zh" ? "日间" : "Light") : (locale === "zh" ? "夜间" : "Dark")}
+            </button>
+            <button
+              type="button"
+              className="app-lang-toggle"
+              onClick={flipLocale}
+              aria-label={locale === "zh" ? "Switch to English" : "切换到中文"}
+            >
+              {locale === "zh" ? t(locale, "langToEn") : t(locale, "langToZh")}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -690,179 +986,221 @@ export default function App() {
         </div>
       ) : null}
 
-      <div className="app-messages" role="log" aria-live="polite">
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={msg.role === "user" ? "app-msg-row user" : "app-msg-row"}
-          >
-            <div className={bubbleClass(msg)}>
-              {msg.role === "assistant" && msg.loading ? (
-                <p
-                  className={
-                    msg.step === "ai_loading"
-                      ? "text-secondary ai-loading-breathe"
-                      : "text-secondary"
-                  }
-                  style={{ margin: 0 }}
-                >
-                  {msg.content}
+      {!hasStarted ? (
+        // === 首页模式 (Landing) ===
+        <div className="landing-container">
+          <div className="landing-content">
+            <h2 className="landing-hero-title">
+              {locale === "zh" ? "探索性格的隐喻编码" : "Explore Personality Metaphors"}
+            </h2>
+            <p className="landing-hero-subtitle">
+              {locale === "zh" 
+                ? "基于出生日期与三角形九进制算法的深度洞察" 
+                : "Deep insights based on birth date and base-9 triangle algorithm"}
+            </p>
+            <form className="landing-form" onSubmit={onSubmit}>
+              <div className="landing-inputs">
+                <LunarBirthField
+                  locale={locale}
+                  value={birthPicker}
+                  onChange={(iso) => {
+                    updateActiveCase((c) => ({ ...c, birthPicker: iso }));
+                    setSubmitHint("");
+                  }}
+                />
+                <input
+                  className="app-input landing-input"
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setSubmitHint("");
+                  }}
+                  placeholder={t(locale, "placeholderInput")}
+                  disabled={busy}
+                  enterKeyHint="send"
+                  autoComplete="off"
+                  inputMode="text"
+                />
+              </div>
+              <button type="submit" className="landing-submit" disabled={busy}>
+                {busy ? t(locale, "sendBusy") : t(locale, "send")}
+              </button>
+              {submitHint && (
+                <p className="text-warn text-center" style={{ marginTop: "12px" }}>
+                  {submitHint}
                 </p>
-              ) : null}
-              {msg.role === "assistant" &&
-              !msg.loading &&
-              msg.error &&
-              msg.step !== "combined_report" &&
-              msg.step !== "followup_chat" ? (
-                <p className="text-error">{msg.error}</p>
-              ) : null}
-              {msg.role === "assistant" && !msg.loading && msg.step === "local_result" && msg.payload ? (
-                <>
-                  <p className="reply-provenance">{t(locale, "replyProvenanceLocal")}</p>
-                  <LogicSummary p={msg.payload} locale={locale} />
-                  <details className="app-details full-ai-appendix" defaultOpen={false}>
-                    <summary>{t(locale, "detailsAppendix")}</summary>
-                    <div className="details-body">
-                      <StructuredAppendix p={msg.payload} locale={locale} />
-                    </div>
-                  </details>
-                  <p className="disclaimer">{msg.payload.disclaimer}</p>
-                </>
-              ) : null}
-              {msg.role === "assistant" && !msg.loading && msg.step === "combined_report" && msg.payload ? (
-                <>
-                  {msg.error ? <p className="text-error">{msg.error}</p> : null}
-                  <div className="result-section">
-                    <div className="result-section-title">{t(locale, "summaryTitle")}</div>
-                    <LogicSummary p={msg.payload} locale={locale} />
-                  </div>
-                  <div className="result-section">
-                    <div className="result-section-title">{t(locale, "personalityTitle")}</div>
-                    {msg.error && msg.payload.personality_synthesis ? (
+              )}
+            </form>
+          </div>
+        </div>
+      ) : (
+        // === 结果页模式 (Dashboard: 左右分栏) ===
+        <div className="dashboard-container">
+          {/* 左侧可视化区 */}
+          <div className="dashboard-left">
+            <Suspense fallback={<div className="tv-suspense-fallback" />}>
+              <TriangleVisualizer
+                data={latestPayload?.visualization ?? null}
+                birth={latestPayload?.birth ?? null}
+                locale={locale}
+              />
+            </Suspense>
+          </div>
+
+          {/* 右侧对话与结果区 */}
+          <div className="dashboard-right">
+            <div className="app-messages" role="log" aria-live="polite">
+              {messages.map((msg, i) => (
+                <div
+                  key={i}
+                  className={msg.role === "user" ? "app-msg-row user" : "app-msg-row"}
+                >
+                  <div className={bubbleClass(msg)}>
+                    {msg.role === "user" ? (
+                      <p className="app-bubble-user-plain" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                        {msg.content}
+                      </p>
+                    ) : null}
+                    {msg.role === "assistant" && msg.loading ? (
+                      <p
+                        className={
+                          msg.step === "ai_loading"
+                            ? "text-secondary ai-loading-breathe"
+                            : "text-secondary"
+                        }
+                        style={{ margin: 0 }}
+                      >
+                        {msg.content}
+                      </p>
+                    ) : null}
+                    {msg.role === "assistant" &&
+                    !msg.loading &&
+                    msg.error &&
+                    msg.step !== "combined_report" &&
+                    msg.step !== "followup_chat" ? (
+                      <p className="text-error">{msg.error}</p>
+                    ) : null}
+                    {/* 本地结果临时气泡 */}
+                    {msg.role === "assistant" && !msg.loading && msg.step === "local_result" && msg.payload ? (
                       <>
-                        <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
-                          {t(locale, "fallbackLocalNotePrefix")}
-                          <strong>{t(locale, "fallbackLocalNoteStrong")}</strong>
-                          {t(locale, "fallbackLocalNoteSuffix")}
+                        <p className="reply-provenance">{t(locale, "replyProvenanceLocal")}</p>
+                        <p className="note-muted" style={{ margin: "10px 0" }}>
+                          {locale === "zh" ? "正在推演中..." : "Computing..."}
                         </p>
-                        <div className="report-flow">{msg.payload.personality_synthesis}</div>
                       </>
                     ) : null}
-                    {!msg.error && msg.replySource !== "model" && String(msg.content ?? "").trim() ? (
-                      <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
-                        {t(locale, "replyMetaNote")}
-                      </p>
+                    {/* 完整报告 */}
+                    {msg.role === "assistant" && !msg.loading && msg.step === "combined_report" && msg.payload ? (
+                      <>
+                        {msg.error ? <p className="text-error">{msg.error}</p> : null}
+                        <div className="result-section">
+                          <div className="result-section-title">{t(locale, "personalityTitle")}</div>
+                          {msg.error && msg.payload.personality_synthesis ? (
+                            <>
+                              <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
+                                {t(locale, "fallbackLocalNotePrefix")}
+                                <strong>{t(locale, "fallbackLocalNoteStrong")}</strong>
+                                {t(locale, "fallbackLocalNoteSuffix")}
+                              </p>
+                              <div className="report-flow">{msg.payload.personality_synthesis}</div>
+                            </>
+                          ) : null}
+                          {!msg.error && msg.replySource !== "model" && String(msg.content ?? "").trim() ? (
+                            <p className="note-muted" style={{ margin: "0 0 10px", fontSize: "13px" }}>
+                              {t(locale, "replyMetaNote")}
+                            </p>
+                          ) : null}
+                          {!msg.error && msg.modelWarning ? (
+                            <p className="text-warn" style={{ marginTop: 0 }}>
+                              {msg.modelWarning}
+                            </p>
+                          ) : null}
+                          {!msg.error && msg.content ? (
+                            <div className="report-flow">{msg.content}</div>
+                          ) : null}
+                          {!msg.error && !msg.content ? (
+                            <p className="text-error" style={{ marginTop: 0 }}>
+                              {t(locale, "noModelBody")}
+                            </p>
+                          ) : null}
+                        </div>
+                        <details
+                          className="app-details full-ai-appendix"
+                          defaultOpen={Boolean(msg.error || msg.modelWarning)}
+                        >
+                          <summary>{t(locale, "detailsAppendixOptional")}</summary>
+                          <div className="details-body">
+                            <StructuredAppendix
+                              p={msg.payload}
+                              locale={locale}
+                              omitLogicSummary={false}
+                              omitPersonalitySynthesis={Boolean(
+                                msg.error && msg.payload.personality_synthesis,
+                              )}
+                            />
+                          </div>
+                        </details>
+                        <p className="disclaimer">{msg.payload.disclaimer}</p>
+                      </>
                     ) : null}
-                    {!msg.error && msg.modelWarning ? (
-                      <p className="text-warn" style={{ marginTop: 0 }}>
-                        {msg.modelWarning}
-                      </p>
+                    {/* 追问回复 */}
+                    {msg.role === "assistant" && !msg.loading && msg.step === "followup_chat" && msg.payload ? (
+                      <>
+                        {msg.error ? <p className="text-error">{msg.error}</p> : null}
+                        <div className="result-section">
+                          {!msg.error && msg.modelWarning ? (
+                            <p className="text-warn" style={{ marginTop: 0 }}>
+                              {msg.modelWarning}
+                            </p>
+                          ) : null}
+                          {!msg.error && msg.content ? (
+                            <div className="report-flow">{msg.content}</div>
+                          ) : null}
+                          {!msg.error && !msg.content ? (
+                            <p className="text-error" style={{ marginTop: 0 }}>
+                              {t(locale, "noModelBody")}
+                            </p>
+                          ) : null}
+                        </div>
+                      </>
                     ) : null}
-                    {!msg.error && msg.content ? (
-                      <div className="report-flow">{msg.content}</div>
-                    ) : null}
-                    {!msg.error && !msg.content ? (
-                      <p className="text-error" style={{ marginTop: 0 }}>
-                        {t(locale, "noModelBody")}
-                      </p>
-                    ) : null}
+                    {msg.role === "assistant" && !msg.loading && !msg.payload && msg.content && (
+                      <div>{msg.content}</div>
+                    )}
                   </div>
-                  <details
-                    className="app-details full-ai-appendix"
-                    defaultOpen={Boolean(msg.error || msg.modelWarning)}
-                  >
-                    <summary>{t(locale, "detailsAppendixOptional")}</summary>
-                    <div className="details-body">
-                      <StructuredAppendix
-                        p={msg.payload}
-                        locale={locale}
-                        omitLogicSummary
-                        omitPersonalitySynthesis={Boolean(
-                          msg.error && msg.payload.personality_synthesis,
-                        )}
-                      />
-                    </div>
-                  </details>
-                  <p className="disclaimer">{msg.payload.disclaimer}</p>
-                </>
-              ) : null}
-              {msg.role === "assistant" && !msg.loading && msg.step === "followup_chat" && msg.payload ? (
-                <>
-                  {msg.error ? <p className="text-error">{msg.error}</p> : null}
-                  <div className="result-section">
-                    <div className="result-section-title">{t(locale, "followupTitle")}</div>
-                    {!msg.error && msg.modelWarning ? (
-                      <p className="text-warn" style={{ marginTop: 0 }}>
-                        {msg.modelWarning}
-                      </p>
-                    ) : null}
-                    {!msg.error && msg.content ? (
-                      <div className="report-flow">{msg.content}</div>
-                    ) : null}
-                    {!msg.error && !msg.content ? (
-                      <p className="text-error" style={{ marginTop: 0 }}>
-                        {t(locale, "noModelBody")}
-                      </p>
-                    ) : null}
-                  </div>
-                  <details className="app-details full-ai-appendix" defaultOpen={false}>
-                    <summary>{t(locale, "detailsAppendixCompare")}</summary>
-                    <div className="details-body">
-                      <LogicSummary p={msg.payload} locale={locale} />
-                      <StructuredAppendix
-                        p={msg.payload}
-                        locale={locale}
-                        omitLogicSummary
-                        omitPersonalitySynthesis
-                      />
-                    </div>
-                  </details>
-                  <p className="disclaimer">{msg.payload.disclaimer}</p>
-                </>
-              ) : null}
-              {msg.role === "assistant" && !msg.loading && !msg.payload && msg.content && (
-                <div>{msg.content}</div>
-              )}
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
             </div>
-          </div>
-        ))}
-      </div>
 
-      <form className="app-footer" onSubmit={onSubmit}>
-        <div className="app-controls">
-          <LunarBirthField
-            locale={locale}
-            value={birthPicker}
-            onChange={(iso) => {
-              setBirthPicker(iso);
-              setSubmitHint("");
-            }}
-          />
-          <div className="app-compose">
-            <input
-              className="app-input"
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                setSubmitHint("");
-              }}
-              placeholder={t(locale, "placeholderInput")}
-              disabled={busy}
-              enterKeyHint="send"
-              autoComplete="off"
-              inputMode="text"
-            />
-            <button type="submit" className="app-send" disabled={busy}>
-              {busy ? t(locale, "sendBusy") : t(locale, "send")}
-            </button>
+            <form className="dashboard-footer" onSubmit={onSubmit}>
+              <div className="app-compose">
+                <input
+                  className="app-input"
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setSubmitHint("");
+                  }}
+                  placeholder={locale === "zh" ? "继续追问或输入新日期..." : "Follow up or enter new date..."}
+                  disabled={busy}
+                  enterKeyHint="send"
+                  autoComplete="off"
+                  inputMode="text"
+                />
+                <button type="submit" className="app-send-icon-btn" disabled={busy || !input.trim()}>
+                  <SendHorizontal size={20} />
+                </button>
+              </div>
+              {submitHint ? (
+                <p className="text-warn" style={{ margin: "8px 0 0" }}>
+                  {submitHint}
+                </p>
+              ) : null}
+            </form>
           </div>
-          {submitHint ? (
-            <p className="text-warn" style={{ margin: "8px 0 0" }}>
-              {submitHint}
-            </p>
-          ) : null}
         </div>
-      </form>
+      )}
     </div>
   );
 }

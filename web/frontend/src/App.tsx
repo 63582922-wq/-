@@ -194,6 +194,23 @@ function loadCaseStore(locale: Locale): CaseStore {
   }
 }
 
+function normalizeLoadedCaseStore(raw: unknown, locale: Locale): CaseStore | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const casesRaw = o.cases;
+  const list = Array.isArray(casesRaw) ? casesRaw : [];
+  const cases = list
+    .map((x) => normalizeLoadedCase(x, locale))
+    .filter(Boolean) as CaseSession[];
+  if (cases.length === 0) return null;
+  const activeRaw = o.activeCaseId;
+  const activeCaseId =
+    typeof activeRaw === "string" && cases.some((c) => c.id === activeRaw)
+      ? activeRaw
+      : cases[0].id;
+  return { activeCaseId, cases };
+}
+
 /** 供给 /api/chat 的 history：不含当前正在发送的这一条用户话。 */
 function buildApiHistory(msgs: ChatMessage[]): ChatTurnApi[] {
   const out: ChatTurnApi[] = [];
@@ -523,6 +540,163 @@ function bubbleClass(msg: ChatMessage): string {
   return base;
 }
 
+function formatTs(ts: number, locale: Locale): string {
+  try {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return locale === "zh" ? `${y}-${m}-${day} ${hh}:${mm}` : `${y}-${m}-${day} ${hh}:${mm}`;
+  } catch {
+    return "";
+  }
+}
+
+function latestPayloadFromMessages(msgs: ChatMessage[]): AgentPayload | null {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].payload) return msgs[i].payload ?? null;
+  }
+  return null;
+}
+
+function latestAssistantBodyFromMessages(msgs: ChatMessage[]): string {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== "assistant") continue;
+    if (m.loading) continue;
+    if (m.error) continue;
+    if (!String(m.content ?? "").trim()) continue;
+    if (m.step === "local_compute" || m.step === "local_result" || m.step === "ai_loading") continue;
+    return m.content;
+  }
+  return "";
+}
+
+function ExportPage({
+  caseSession,
+  locale,
+}: {
+  caseSession: CaseSession;
+  locale: Locale;
+}) {
+  const payload = useMemo(
+    () => latestPayloadFromMessages(caseSession.messages),
+    [caseSession.messages],
+  );
+  const assistantBody = useMemo(
+    () => latestAssistantBodyFromMessages(caseSession.messages),
+    [caseSession.messages],
+  );
+
+  useEffect(() => {
+    const t = window.setTimeout(() => window.print(), 450);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  return (
+    <div className="export-shell">
+      <div className="export-toolbar no-print">
+        <div className="export-toolbar-title">
+          {locale === "zh" ? "PDF 导出预览" : "PDF Export Preview"}
+        </div>
+        <div className="export-toolbar-actions">
+          <button type="button" className="app-case-new" onClick={() => window.print()}>
+            {locale === "zh" ? "打印/保存 PDF" : "Print/Save PDF"}
+          </button>
+          <button type="button" className="app-theme-toggle" onClick={() => window.close()}>
+            {locale === "zh" ? "关闭" : "Close"}
+          </button>
+        </div>
+      </div>
+
+      <div className="export-page">
+        <div className="export-header">
+          <div className="export-title">
+            {caseSession.title || (locale === "zh" ? "未命名案例" : "Untitled case")}
+          </div>
+          <div className="export-meta">
+            <div>
+              {locale === "zh" ? "创建：" : "Created: "}
+              {formatTs(caseSession.createdAt, locale)}
+            </div>
+            <div>
+              {locale === "zh" ? "更新：" : "Updated: "}
+              {formatTs(caseSession.updatedAt, locale)}
+            </div>
+            <div>
+              {locale === "zh" ? "锁定生日：" : "Birth locked: "}
+              {caseSession.lockedBirthIso || "—"}
+            </div>
+          </div>
+        </div>
+
+        <div className="export-section">
+          <div className="export-section-title">{locale === "zh" ? "图解" : "Diagram"}</div>
+          <div className="export-diagram">
+            <Suspense fallback={<div className="tv-suspense-fallback" />}>
+              <TriangleVisualizer
+                data={payload?.visualization ?? null}
+                birth={payload?.birth ?? null}
+                locale={locale}
+                mode="export"
+              />
+            </Suspense>
+          </div>
+        </div>
+
+        <div className="export-section">
+          <div className="export-section-title">{locale === "zh" ? "逻辑结构" : "Logic"}</div>
+          {payload ? (
+            <div className="export-logic">
+              <LogicSummary p={payload} locale={locale} />
+              <div className="structured-appendix export-appendix">
+                <div className="section-label">{locale === "zh" ? "外圈（对外/对内/对下）" : "Outer ring"}</div>
+                {payload.fusion_groups.map((g) => (
+                  <GroupCard key={`exp-out-${g.code + g.label}`} g={g} locale={locale} />
+                ))}
+                {payload.inner_fusion_groups && payload.inner_fusion_groups.length > 0 ? (
+                  <>
+                    <div className="section-label">{locale === "zh" ? "内圈（核心）" : "Inner ring"}</div>
+                    {payload.inner_fusion_groups.map((g) => (
+                      <GroupCard key={`exp-in-${g.code + g.label}`} g={g} locale={locale} />
+                    ))}
+                  </>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="note-muted">{locale === "zh" ? "暂无推演结果。" : "No payload."}</div>
+          )}
+        </div>
+
+        <div className="export-section">
+          <div className="export-section-title">{locale === "zh" ? "AI 输出" : "AI Output"}</div>
+          {assistantBody ? (
+            <div className="report-flow export-ai">{assistantBody}</div>
+          ) : (
+            <div className="note-muted">{locale === "zh" ? "暂无 AI 正文。" : "No AI body."}</div>
+          )}
+        </div>
+
+        <div className="export-section">
+          <div className="export-section-title">{locale === "zh" ? "对话记录" : "Chat Log"}</div>
+          <div className="export-chat">
+            {caseSession.messages.map((m, idx) => (
+              <div key={idx} className={`export-chat-row ${m.role}`}>
+                <div className="export-chat-role">{m.role === "user" ? (locale === "zh" ? "用户" : "User") : (locale === "zh" ? "AI" : "Assistant")}</div>
+                <div className="export-chat-body report-flow">{String(m.content ?? "")}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [locale, setLocale] = useState<Locale>(() => readStoredLocale());
   const [theme, setTheme] = useState<"dark" | "light">(() => {
@@ -536,11 +710,29 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [submitHint, setSubmitHint] = useState("");
   const [backendBanner, setBackendBanner] = useState<string | null>(null);
+  const [cloudHint, setCloudHint] = useState("");
+  const [cloudBusy, setCloudBusy] = useState(false);
+
+  const isExport =
+    typeof window !== "undefined" && window.location.pathname === "/export";
 
   const activeCase = useMemo(() => {
     const found = caseStore.cases.find((c) => c.id === caseStore.activeCaseId);
     return found ?? caseStore.cases[0];
   }, [caseStore]);
+
+  const exportCaseId =
+    isExport && typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("caseId") ?? ""
+      : "";
+  const exportCase = useMemo(() => {
+    if (!isExport) return activeCase;
+    if (exportCaseId) {
+      const found = caseStore.cases.find((c) => c.id === exportCaseId);
+      if (found) return found;
+    }
+    return activeCase;
+  }, [activeCase, caseStore.cases, exportCaseId, isExport]);
 
   const activeCaseRef = useRef<CaseSession>(activeCase);
   const activeCaseIdRef = useRef<string>(caseStore.activeCaseId);
@@ -553,6 +745,54 @@ export default function App() {
   const messages = activeCase.messages;
   const lockedBirthIso = activeCase.lockedBirthIso;
   const birthPicker = activeCase.birthPicker;
+
+  async function saveCaseStoreToServer() {
+    setCloudBusy(true);
+    setCloudHint("");
+    try {
+      const r = await fetch("/api/case-store", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ store: caseStore }),
+      });
+      if (!r.ok) {
+        setCloudHint(locale === "zh" ? "云保存失败" : "Cloud save failed");
+        return;
+      }
+      setCloudHint(locale === "zh" ? "已保存到服务器" : "Saved to server");
+    } catch {
+      setCloudHint(locale === "zh" ? "云保存失败" : "Cloud save failed");
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  async function loadCaseStoreFromServer() {
+    setCloudBusy(true);
+    setCloudHint("");
+    try {
+      const r = await fetch("/api/case-store", { cache: "no-store" });
+      const j = (await r.json()) as { store?: unknown };
+      const loaded = normalizeLoadedCaseStore(j.store, locale);
+      if (!loaded) {
+        setCloudHint(locale === "zh" ? "服务器暂无存档" : "No server snapshot");
+        return;
+      }
+      setCaseStore(loaded);
+      setCloudHint(locale === "zh" ? "已从服务器恢复" : "Restored from server");
+    } catch {
+      setCloudHint(locale === "zh" ? "云恢复失败" : "Cloud restore failed");
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  function openPdfExport() {
+    const id = caseStore.activeCaseId;
+    const url = `/export?caseId=${encodeURIComponent(id)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 
   function updateCaseById(caseId: string, updater: (c: CaseSession) => CaseSession) {
     setCaseStore((prev) => {
@@ -588,6 +828,10 @@ export default function App() {
       /* ignore */
     }
   }, [caseStore]);
+
+  if (isExport) {
+    return <ExportPage caseSession={exportCase} locale={locale} />;
+  }
 
   // 引用最新成功的 payload 供左侧可视化使用
   const latestPayload = useMemo(() => {
@@ -962,6 +1206,29 @@ export default function App() {
             </button>
             <button
               type="button"
+              className="app-case-new"
+              onClick={saveCaseStoreToServer}
+              disabled={cloudBusy}
+            >
+              {locale === "zh" ? "云保存" : "Save"}
+            </button>
+            <button
+              type="button"
+              className="app-case-new"
+              onClick={loadCaseStoreFromServer}
+              disabled={cloudBusy}
+            >
+              {locale === "zh" ? "云恢复" : "Restore"}
+            </button>
+            <button
+              type="button"
+              className="app-case-new"
+              onClick={openPdfExport}
+            >
+              {locale === "zh" ? "下载PDF" : "PDF"}
+            </button>
+            <button
+              type="button"
               className="app-theme-toggle"
               onClick={flipTheme}
               aria-label={theme === "dark" ? "Switch to light mode" : "切换到夜间模式"}
@@ -983,6 +1250,11 @@ export default function App() {
       {backendBanner ? (
         <div className="note-muted" style={{ margin: "0 0 10px", flexShrink: 0 }}>
           {backendBanner}
+        </div>
+      ) : null}
+      {cloudHint ? (
+        <div className="note-muted" style={{ margin: "0 0 10px", flexShrink: 0 }}>
+          {cloudHint}
         </div>
       ) : null}
 

@@ -753,3 +753,179 @@ code {
   display: flex;
   flex-direction: column;
 }
+
+.export-shell {
+  flex: 1 1 auto;
+  min-height: 100dvh;
+}
+
+.export-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(14, 14, 16, 0.9);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.export-toolbar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.export-toolbar-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.export-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 22px 18px 40px;
+}
+
+.export-header {
+  padding: 14px 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.export-title {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.export-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.export-section {
+  margin-top: 14px;
+}
+
+.export-section-title {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.export-diagram .tv-container:not(.empty) {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.export-diagram .tv-aspect-ratio-box {
+  transform: none;
+}
+
+.export-chat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  padding: 10px 12px;
+}
+
+.export-chat-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.export-chat-row:last-child {
+  border-bottom: none;
+}
+
+.export-chat-role {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 650;
+}
+
+.export-chat-body {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.export-ai {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  padding: 12px 14px;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  :root {
+    --bg-root: #ffffff;
+    --bg-secondary: #ffffff;
+    --text: #000000;
+    --text-secondary: #333333;
+    --border: #dddddd;
+    --border-focus: #bbbbbb;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .export-page {
+    padding: 0;
+  }
+
+  .export-toolbar {
+    display: none;
+  }
+
+  .tv-container {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .tv-aspect-ratio-box {
+    transform: none !important;
+  }
+
+  .tv-preview-card {
+    display: none !important;
+  }
+
+  .tv-fade-in {
+    opacity: 1 !important;
+    transform: none !important;
+    animation: none !important;
+  }
+
+  .export-section,
+  .export-header,
+  .export-chat-row,
+  .card-group,
+  .logic-summary {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

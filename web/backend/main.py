@@ -8,6 +8,7 @@ http://127.0.0.1:8000 或 http://localhost:8000，勿用 http://0.0.0.0:8000（C
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -55,6 +56,45 @@ KNOWLEDGE_PATH = ROOT / "personality_encoder" / "knowledge.json"
 API_BUILD_MARK = "reply-source-v9"
 
 app = FastAPI(title="性格编码智能体", version="1.0.0")
+
+CASE_STORE_PATH = ROOT / "web" / "backend" / "data" / "case_store.json"
+
+
+def _read_case_store() -> Optional[Dict[str, Any]]:
+    try:
+        raw = CASE_STORE_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.exception("read case store failed")
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        logger.exception("parse case store failed")
+        return None
+    if not isinstance(data, dict):
+        return None
+    store = data.get("store")
+    if not isinstance(store, dict):
+        return None
+    return store
+
+
+def _write_case_store(store: Dict[str, Any]) -> None:
+    CASE_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "updated_at": int(time.time()),
+        "store": store,
+    }
+    tmp = CASE_STORE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CASE_STORE_PATH)
+
+
+class CaseStoreBody(BaseModel):
+    store: Dict[str, Any]
 
 
 @app.on_event("startup")
@@ -273,6 +313,22 @@ def api_status():
     }
 
 
+@app.get("/api/case-store")
+def api_get_case_store():
+    store = _read_case_store()
+    return {"ok": True, "store": store}
+
+
+@app.put("/api/case-store")
+def api_put_case_store(body: CaseStoreBody):
+    try:
+        _write_case_store(body.store)
+    except Exception:
+        logger.exception("write case store failed")
+        raise HTTPException(status_code=500, detail="Failed to save case store")
+    return {"ok": True}
+
+
 @app.post("/api/encode")
 def encode(body: EncodeBody):
     try:
@@ -421,6 +477,14 @@ if _FRONT_DIST.is_dir():
             name="vite_assets",
         )
 
+    _boards_dir = _FRONT_DIST / "board-previews"
+    if _boards_dir.is_dir():
+        app.mount(
+            "/board-previews",
+            StaticFiles(directory=str(_boards_dir)),
+            name="board_previews",
+        )
+
     @app.get("/")
     def _spa_root():
         return FileResponse(_FRONT_DIST / "index.html")
@@ -429,10 +493,13 @@ if _FRONT_DIST.is_dir():
     def _spa_index_document():
         return FileResponse(_FRONT_DIST / "index.html")
 
+    @app.get("/export")
+    def _spa_export_document():
+        return FileResponse(_FRONT_DIST / "index.html")
+
     @app.get("/favicon.svg")
     def _favicon_svg_file():
         p = _FRONT_DIST / "favicon.svg"
         if p.is_file():
             return FileResponse(p)
         raise HTTPException(status_code=404, detail="Not Found")
-

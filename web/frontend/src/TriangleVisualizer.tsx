@@ -60,21 +60,6 @@ function formatSourceEquation(detail?: VisualPairDetail) {
   return `${detail.source_digits[0]} + ${detail.source_digits[1]}`;
 }
 
-function previewMeaning(detail?: VisualPairDetail, locale: "zh" | "en" = "zh") {
-  if (!detail) return [];
-  const labels = compactLabels(detail.digit_labels);
-  if (labels.length > 0) {
-    return labels;
-  }
-  if (detail.traits.length > 0) {
-    return detail.traits.slice(0, 2);
-  }
-  if (detail.lines.length > 0) {
-    return detail.lines.slice(0, 2);
-  }
-  return [locale === "zh" ? "暂无说明" : "No note"];
-}
-
 type NodeSpec = {
   key: string;
   pairText: string;
@@ -92,7 +77,6 @@ const VIEW_H = 760;
 
 export default function TriangleVisualizer({
   data,
-  birth = null,
   locale = "zh",
   mode = "interactive",
 }: TriangleVisualizerProps) {
@@ -195,8 +179,6 @@ export default function TriangleVisualizer({
   );
 
   const activeDetail = activeHover ? nodeMap[activeHover.nodeId] : undefined;
-  const activeMeaning = previewMeaning(activeDetail, locale);
-  const activeEquation = activeDetail ? `${formatSourceEquation(activeDetail)} = ${activeDetail.result_digit}` : "";
 
   if (!data) {
     return (
@@ -210,7 +192,6 @@ export default function TriangleVisualizer({
   }
 
   const b8 = safeData.boxes8;
-  const pairSourceLabel = locale === "en" ? "Source" : "来源";
   const shownStage = interactive ? stage : 4;
 
   return (

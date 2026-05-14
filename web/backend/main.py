@@ -53,48 +53,9 @@ from personality_encoder.encode import (
 KNOWLEDGE_PATH = ROOT / "personality_encoder" / "knowledge.json"
 
 # 用于自检：若 GET /api/status 的 build_mark 不是此值，说明浏览器连上的仍是旧进程或未部署新代码。
-API_BUILD_MARK = "reply-source-v9"
+API_BUILD_MARK = "reply-source-v10"
 
 app = FastAPI(title="性格编码智能体", version="1.0.0")
-
-CASE_STORE_PATH = ROOT / "web" / "backend" / "data" / "case_store.json"
-
-
-def _read_case_store() -> Optional[Dict[str, Any]]:
-    try:
-        raw = CASE_STORE_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except Exception:
-        logger.exception("read case store failed")
-        return None
-    try:
-        data = json.loads(raw)
-    except Exception:
-        logger.exception("parse case store failed")
-        return None
-    if not isinstance(data, dict):
-        return None
-    store = data.get("store")
-    if not isinstance(store, dict):
-        return None
-    return store
-
-
-def _write_case_store(store: Dict[str, Any]) -> None:
-    CASE_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": 1,
-        "updated_at": int(time.time()),
-        "store": store,
-    }
-    tmp = CASE_STORE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(CASE_STORE_PATH)
-
-
-class CaseStoreBody(BaseModel):
-    store: Dict[str, Any]
 
 
 @app.on_event("startup")
@@ -311,22 +272,6 @@ def api_status():
         "process_cwd": str(Path.cwd()),
         "hint": "本机请用 http://127.0.0.1:8000 打开页面，勿用 http://0.0.0.0:8000。代码或 .env 变更后须重启 uvicorn；手机请访问 http://<本机局域网IP>:8000。",
     }
-
-
-@app.get("/api/case-store")
-def api_get_case_store():
-    store = _read_case_store()
-    return {"ok": True, "store": store}
-
-
-@app.put("/api/case-store")
-def api_put_case_store(body: CaseStoreBody):
-    try:
-        _write_case_store(body.store)
-    except Exception:
-        logger.exception("write case store failed")
-        raise HTTPException(status_code=500, detail="Failed to save case store")
-    return {"ok": True}
 
 
 @app.post("/api/encode")

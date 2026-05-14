@@ -116,7 +116,178 @@ select {
 .app-header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
+}
+
+.app-case-primary {
+  background: rgba(139, 92, 246, 0.18);
+  border: 1px solid rgba(139, 92, 246, 0.45);
+  color: #e9e4ff;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.app-case-primary:hover {
+  background: rgba(139, 92, 246, 0.28);
+  border-color: rgba(165, 143, 255, 0.65);
+  color: #fff;
+}
+
+.case-panel-section {
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.case-panel-section:last-of-type {
+  border-bottom: none;
+  margin-bottom: 8px;
+  padding-bottom: 0;
+}
+
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.case-panel-section-hint {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.case-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+}
+
+.case-panel {
+  width: min(400px, 100vw);
+  max-height: 100vh;
+  overflow: auto;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  padding: 16px 18px 24px;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.35);
+}
+
+.case-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.case-panel-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.case-panel-hint {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.case-panel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.case-panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.case-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.case-panel-item {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.case-panel-item.is-active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.25);
+}
+
+.case-panel-item-main {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.case-panel-item-main:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.case-panel-item-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.case-panel-item-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.case-panel-item-del {
+  flex-shrink: 0;
+  min-width: 48px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--warn, #f59e0b);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.case-panel-item-del:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--error, #ef4444);
 }
 
 .app-case-select {
@@ -275,7 +446,7 @@ select {
   cursor: not-allowed;
 }
 
-/* === Dashboard (结果页模式：左右分栏) === */
+/* === Dashboard (结果页：对话在左，三角图在右；窄屏 flex-order 仍为上图下文) === */
 .dashboard-container {
   flex: 1;
   display: flex;
@@ -285,10 +456,10 @@ select {
 }
 
 .dashboard-left {
-  flex: 1.5; /* 让左侧三角形占据更多空间 */
+  flex: 1.5; /* 右侧三角区占相对更多宽度 */
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--bg-secondary);
   display: flex;
   align-items: flex-start;
@@ -308,7 +479,7 @@ select {
 .dashboard-right {
   flex: 1;
   min-width: 400px;
-  max-width: 600px; /* 限制右侧聊天区最大宽度，避免文字太长难以阅读 */
+  max-width: 600px; /* 限制左侧对话栏最大宽度，避免文字太长难以阅读 */
   display: flex;
   flex-direction: column;
   background: var(--bg-app);
@@ -320,7 +491,7 @@ select {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* === Messages Area (右侧聊天区) === */
+/* === Messages Area (对话区) === */
 .app-messages {
   flex: 1;
   overflow-y: auto;
@@ -376,7 +547,7 @@ select {
   50% { opacity: 1; }
 }
 
-/* === Dashboard Footer (右侧底部输入区) === */
+/* === Dashboard Footer (对话栏底部输入区) === */
 .dashboard-footer {
   flex-shrink: 0;
   padding: 16px 32px;
@@ -580,22 +751,28 @@ code {
   .dashboard-container {
     flex-direction: column;
   }
-  
+
+  /* DOM 顺序为对话→三角；窄屏仍要「三角在上、对话在下」 */
   .dashboard-left {
+    order: 1;
     flex: none;
     height: 400px;
-    border-right: none;
+    border-left: none;
     border-bottom: 1px solid var(--border);
   }
-  
+
+  .dashboard-right {
+    order: 2;
+  }
+
   .app-messages {
     padding: 16px;
   }
-  
+
   .dashboard-footer {
     padding: 16px;
   }
-  
+
   .landing-form {
     padding: 24px 16px;
   }
@@ -752,6 +929,17 @@ code {
   z-index: 0;
   display: flex;
   flex-direction: column;
+}
+
+.export-page--capture-root {
+  max-width: 720px;
+  margin: 0;
+  background: var(--bg-app);
+}
+
+[data-word-capture-host] {
+  font-family: var(--font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  color: var(--text);
 }
 
 .export-shell {

@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState, useRef, lazy, Suspense } from "react";
+import { FormEvent, useEffect, useMemo, useState, useRef, lazy, Suspense, forwardRef } from "react";
+import { createRoot } from "react-dom/client";
 import { messageHasExtractableBirthDate } from "./date-parse";
 import {
   LOCALE_STORAGE_KEY,
@@ -13,7 +14,7 @@ import { SendHorizontal } from "lucide-react";
 const TriangleVisualizer = lazy(() => import("./TriangleVisualizer"));
 
 /** 须与 web/backend/main.py 中 API_BUILD_MARK 保持一致 */
-const EXPECTED_API_BUILD_MARK = "reply-source-v9";
+const EXPECTED_API_BUILD_MARK = "reply-source-v10";
 
 function readStoredLocale(): Locale {
   if (typeof window === "undefined") return "zh";
@@ -31,7 +32,7 @@ type FusionGroup = {
     阳面: string[];
     阴面: string[];
   };
-  质_后两位: {
+  质_前两位: {
     pair: string;
     root: number;
     lines: string[];
@@ -40,6 +41,28 @@ type FusionGroup = {
   };
   形质联结?: { pair: string; lines: string[] };
 };
+
+/** 旧版 API / 缓存消息使用 `质_后两位`；新版为 `质_前两位`（zl2.0 语义）。 */
+type FusionGroupLoose = Partial<FusionGroup> & {
+  质_后两位?: FusionGroup["质_前两位"];
+};
+
+function fusionSubstanceBlock(g: FusionGroupLoose, locale: Locale): FusionGroup["质_前两位"] {
+  const v2 = g.质_前两位;
+  if (v2 && typeof v2.pair === "string" && Array.isArray(v2.lines)) return v2;
+  const v1 = g.质_后两位;
+  if (v1 && typeof v1.pair === "string" && Array.isArray(v1.lines)) return v1;
+  return {
+    pair: "—",
+    root: 0,
+    lines: [
+      locale === "zh"
+        ? "（缺少「质」摘录字段：请重新发送一次生日以拉取新版测算。）"
+        : "(Missing substance excerpt — send the birth date again to refresh.)",
+    ],
+    in_chart: false,
+  };
+}
 
 type AgentPayload = {
   birth: { y: number; m: number; d: number };
@@ -51,6 +74,7 @@ type AgentPayload = {
   fusion_inner_labels?: string[];
   interpretation_frame?: string;
   algorithm_note?: string;
+  encode_schema_version?: number;
   inner_top_digit: FusionGroup["形"];
   fusion_groups: FusionGroup[];
   inner_fusion_groups?: FusionGroup[];
@@ -192,23 +216,6 @@ function loadCaseStore(locale: Locale): CaseStore {
     const c = newCaseSession(locale);
     return { activeCaseId: c.id, cases: [c] };
   }
-}
-
-function normalizeLoadedCaseStore(raw: unknown, locale: Locale): CaseStore | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const casesRaw = o.cases;
-  const list = Array.isArray(casesRaw) ? casesRaw : [];
-  const cases = list
-    .map((x) => normalizeLoadedCase(x, locale))
-    .filter(Boolean) as CaseSession[];
-  if (cases.length === 0) return null;
-  const activeRaw = o.activeCaseId;
-  const activeCaseId =
-    typeof activeRaw === "string" && cases.some((c) => c.id === activeRaw)
-      ? activeRaw
-      : cases[0].id;
-  return { activeCaseId, cases };
 }
 
 /** 供给 /api/chat 的 history：不含当前正在发送的这一条用户话。 */
@@ -395,16 +402,27 @@ function TriangleCard({ tri }: { tri: Record<string, unknown> }) {
   return <pre className="app-triangle-pre">{pretty}</pre>;
 }
 
-function GroupCard({ g, locale }: { g: FusionGroup; locale: Locale }) {
+function GroupCard({ g, locale }: { g: FusionGroupLoose; locale: Locale }) {
+  const sub = fusionSubstanceBlock(g, locale);
   return (
     <article className="card-group">
       <header>
         {g.label} · <code>{g.code}</code>
       </header>
-      <p style={{ margin: "0 0 8px" }}>
+      <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text)" }}>
         {locale === "zh"
-          ? `形（首位 ${g.形.digit}）：${g.形.卦象节气时辰}`
-          : `Form (first digit ${g.形.digit}): ${g.形.卦象节气时辰}`}
+          ? `质（前两位 ${sub.pair} → 根 ${sub.root}）`
+          : `Substance (first two ${sub.pair} → root ${sub.root})`}
+      </p>
+      <ul>
+        {sub.lines.map((line, i) => (
+          <li key={i}>{line}</li>
+        ))}
+      </ul>
+      <p style={{ margin: "12px 0 8px" }}>
+        {locale === "zh"
+          ? `形（末位 ${g.形.digit}）：${g.形.卦象节气时辰}`
+          : `Form (last digit ${g.形.digit}): ${g.形.卦象节气时辰}`}
       </p>
       <ul>
         <li>
@@ -415,16 +433,6 @@ function GroupCard({ g, locale }: { g: FusionGroup; locale: Locale }) {
           {t(locale, "groupYin")}
           {g.形.阴面.join("；")}
         </li>
-      </ul>
-      <p style={{ margin: "12px 0 6px", fontWeight: 600, color: "var(--text)" }}>
-        {locale === "zh"
-          ? `质（后两位 ${g.质_后两位.pair} → 根 ${g.质_后两位.root}）`
-          : `Substance (last two ${g.质_后两位.pair} → root ${g.质_后两位.root})`}
-      </p>
-      <ul>
-        {g.质_后两位.lines.map((line, i) => (
-          <li key={i}>{line}</li>
-        ))}
       </ul>
       {g.形质联结 && (
         <>
@@ -575,13 +583,10 @@ function latestAssistantBodyFromMessages(msgs: ChatMessage[]): string {
   return "";
 }
 
-function ExportPage({
-  caseSession,
-  locale,
-}: {
-  caseSession: CaseSession;
-  locale: Locale;
-}) {
+const ReportExportBody = forwardRef<
+  HTMLDivElement,
+  { caseSession: CaseSession; locale: Locale }
+>(function ReportExportBody({ caseSession, locale }, ref) {
   const payload = useMemo(
     () => latestPayloadFromMessages(caseSession.messages),
     [caseSession.messages],
@@ -591,6 +596,102 @@ function ExportPage({
     [caseSession.messages],
   );
 
+  return (
+    <div ref={ref} className="export-page export-page--capture-root" data-word-capture-root="">
+      <div className="export-header">
+        <div className="export-title">
+          {caseSession.title || (locale === "zh" ? "未命名案例" : "Untitled case")}
+        </div>
+        <div className="export-meta">
+          <div>
+            {locale === "zh" ? "创建：" : "Created: "}
+            {formatTs(caseSession.createdAt, locale)}
+          </div>
+          <div>
+            {locale === "zh" ? "更新：" : "Updated: "}
+            {formatTs(caseSession.updatedAt, locale)}
+          </div>
+          <div>
+            {locale === "zh" ? "锁定生日：" : "Birth locked: "}
+            {caseSession.lockedBirthIso || "—"}
+          </div>
+        </div>
+      </div>
+
+      <div className="export-section">
+        <div className="export-section-title">{locale === "zh" ? "图解" : "Diagram"}</div>
+        <div className="export-diagram">
+          <Suspense fallback={<div className="tv-suspense-fallback" />}>
+            <TriangleVisualizer
+              data={payload?.visualization ?? null}
+              birth={payload?.birth ?? null}
+              locale={locale}
+              mode="export"
+            />
+          </Suspense>
+        </div>
+      </div>
+
+      <div className="export-section">
+        <div className="export-section-title">{locale === "zh" ? "逻辑结构" : "Logic"}</div>
+        {payload ? (
+          <div className="export-logic">
+            <LogicSummary p={payload} locale={locale} />
+            <div className="structured-appendix export-appendix">
+              <div className="section-label">{locale === "zh" ? "外圈（对外/对内/对下）" : "Outer ring"}</div>
+              {payload.fusion_groups.map((g) => (
+                <GroupCard key={`exp-out-${g.code + g.label}`} g={g} locale={locale} />
+              ))}
+              {payload.inner_fusion_groups && payload.inner_fusion_groups.length > 0 ? (
+                <>
+                  <div className="section-label">{locale === "zh" ? "内圈（核心）" : "Inner ring"}</div>
+                  {payload.inner_fusion_groups.map((g) => (
+                    <GroupCard key={`exp-in-${g.code + g.label}`} g={g} locale={locale} />
+                  ))}
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <div className="note-muted">{locale === "zh" ? "暂无推演结果。" : "No payload."}</div>
+        )}
+      </div>
+
+      <div className="export-section">
+        <div className="export-section-title">{locale === "zh" ? "AI 输出" : "AI Output"}</div>
+        {assistantBody ? (
+          <div className="report-flow export-ai">{assistantBody}</div>
+        ) : (
+          <div className="note-muted">{locale === "zh" ? "暂无 AI 正文。" : "No AI body."}</div>
+        )}
+      </div>
+
+      <div className="export-section">
+        <div className="export-section-title">{locale === "zh" ? "对话记录" : "Chat Log"}</div>
+        <div className="export-chat">
+          {caseSession.messages.map((m, idx) => (
+            <div key={idx} className={`export-chat-row ${m.role}`}>
+              <div className="export-chat-role">
+                {m.role === "user" ? (locale === "zh" ? "用户" : "User") : locale === "zh" ? "AI" : "Assistant"}
+              </div>
+              <div className="export-chat-body report-flow">{String(m.content ?? "")}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+ReportExportBody.displayName = "ReportExportBody";
+
+function ExportPage({
+  caseSession,
+  locale,
+}: {
+  caseSession: CaseSession;
+  locale: Locale;
+}) {
   useEffect(() => {
     const t = window.setTimeout(() => window.print(), 450);
     return () => window.clearTimeout(t);
@@ -612,89 +713,114 @@ function ExportPage({
         </div>
       </div>
 
-      <div className="export-page">
-        <div className="export-header">
-          <div className="export-title">
-            {caseSession.title || (locale === "zh" ? "未命名案例" : "Untitled case")}
-          </div>
-          <div className="export-meta">
-            <div>
-              {locale === "zh" ? "创建：" : "Created: "}
-              {formatTs(caseSession.createdAt, locale)}
-            </div>
-            <div>
-              {locale === "zh" ? "更新：" : "Updated: "}
-              {formatTs(caseSession.updatedAt, locale)}
-            </div>
-            <div>
-              {locale === "zh" ? "锁定生日：" : "Birth locked: "}
-              {caseSession.lockedBirthIso || "—"}
-            </div>
-          </div>
-        </div>
-
-        <div className="export-section">
-          <div className="export-section-title">{locale === "zh" ? "图解" : "Diagram"}</div>
-          <div className="export-diagram">
-            <Suspense fallback={<div className="tv-suspense-fallback" />}>
-              <TriangleVisualizer
-                data={payload?.visualization ?? null}
-                birth={payload?.birth ?? null}
-                locale={locale}
-                mode="export"
-              />
-            </Suspense>
-          </div>
-        </div>
-
-        <div className="export-section">
-          <div className="export-section-title">{locale === "zh" ? "逻辑结构" : "Logic"}</div>
-          {payload ? (
-            <div className="export-logic">
-              <LogicSummary p={payload} locale={locale} />
-              <div className="structured-appendix export-appendix">
-                <div className="section-label">{locale === "zh" ? "外圈（对外/对内/对下）" : "Outer ring"}</div>
-                {payload.fusion_groups.map((g) => (
-                  <GroupCard key={`exp-out-${g.code + g.label}`} g={g} locale={locale} />
-                ))}
-                {payload.inner_fusion_groups && payload.inner_fusion_groups.length > 0 ? (
-                  <>
-                    <div className="section-label">{locale === "zh" ? "内圈（核心）" : "Inner ring"}</div>
-                    {payload.inner_fusion_groups.map((g) => (
-                      <GroupCard key={`exp-in-${g.code + g.label}`} g={g} locale={locale} />
-                    ))}
-                  </>
-                ) : null}
-              </div>
-            </div>
-          ) : (
-            <div className="note-muted">{locale === "zh" ? "暂无推演结果。" : "No payload."}</div>
-          )}
-        </div>
-
-        <div className="export-section">
-          <div className="export-section-title">{locale === "zh" ? "AI 输出" : "AI Output"}</div>
-          {assistantBody ? (
-            <div className="report-flow export-ai">{assistantBody}</div>
-          ) : (
-            <div className="note-muted">{locale === "zh" ? "暂无 AI 正文。" : "No AI body."}</div>
-          )}
-        </div>
-
-        <div className="export-section">
-          <div className="export-section-title">{locale === "zh" ? "对话记录" : "Chat Log"}</div>
-          <div className="export-chat">
-            {caseSession.messages.map((m, idx) => (
-              <div key={idx} className={`export-chat-row ${m.role}`}>
-                <div className="export-chat-role">{m.role === "user" ? (locale === "zh" ? "用户" : "User") : (locale === "zh" ? "AI" : "Assistant")}</div>
-                <div className="export-chat-body report-flow">{String(m.content ?? "")}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      <ReportExportBody caseSession={caseSession} locale={locale} />
     </div>
   );
+}
+
+type WordBlock = { kind: "title2" | "title3" | "body"; text: string };
+
+function fusionGroupToPlainText(g: FusionGroupLoose, loc: Locale): string {
+  const sub = fusionSubstanceBlock(g, loc);
+  const lines: string[] = [];
+  lines.push(`${g.label} · ${g.code}`);
+  lines.push(
+    loc === "zh"
+      ? `质（前两位 ${sub.pair} → 根 ${sub.root}）`
+      : `Substance (${sub.pair} → root ${sub.root})`,
+  );
+  for (const line of sub.lines) lines.push(`  ${line}`);
+  lines.push(
+    loc === "zh"
+      ? `形（末位 ${g.形.digit}）：${g.形.卦象节气时辰}；核心：${g.形.核心物理属性}`
+      : `Form (last digit ${g.形.digit}): ${g.形.卦象节气时辰}; core: ${g.形.核心物理属性}`,
+  );
+  lines.push(`${loc === "zh" ? "阳面" : "Yang"}：${g.形.阳面.join("；")}`);
+  lines.push(`${loc === "zh" ? "阴面" : "Yin"}：${g.形.阴面.join("；")}`);
+  if (g.形质联结) {
+    lines.push(`${loc === "zh" ? "形质补充" : "Form–substance supplement"}（${g.形质联结.pair}）`);
+    for (const line of g.形质联结.lines) lines.push(`  ${line}`);
+  }
+  return lines.join("\n");
+}
+
+function splitToBodyBlocks(text: string): WordBlock[] {
+  const out: WordBlock[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trimEnd();
+    if (t) out.push({ kind: "body", text: t });
+  }
+  return out;
+}
+
+function buildWordNarrativeBlocks(snapshotCase: CaseSession, loc: Locale): WordBlock[] {
+  const blocks: WordBlock[] = [];
+  blocks.push({
+    kind: "body",
+    text:
+      loc === "zh"
+        ? "以下为可检索、复制的正文；文末附有与「导出 PDF」预览一致的整页截图（含三角图与各板块版式）。"
+        : "Below is searchable text; at the end is a full-page screenshot matching the PDF export preview (diagram + layout).",
+  });
+
+  const payload = latestPayloadFromMessages(snapshotCase.messages);
+  const assistantBody = latestAssistantBodyFromMessages(snapshotCase.messages);
+
+  blocks.push({ kind: "title2", text: loc === "zh" ? "AI 分析 / 综合输出" : "AI analysis / report" });
+  if (assistantBody.trim()) blocks.push(...splitToBodyBlocks(assistantBody.trim()));
+  else blocks.push({ kind: "body", text: loc === "zh" ? "（暂无 AI 正文）" : "(No AI body)" });
+
+  if (payload) {
+    blocks.push({ kind: "title2", text: loc === "zh" ? "说明与原理摘录" : "Notes & algorithm excerpt" });
+    const parts: string[] = [];
+    if (payload.disclaimer?.trim()) parts.push(payload.disclaimer.trim());
+    if (payload.personality_synthesis?.trim()) parts.push(payload.personality_synthesis.trim());
+    if (payload.interpretation_frame?.trim()) parts.push(payload.interpretation_frame.trim());
+    if (payload.algorithm_note?.trim()) parts.push(payload.algorithm_note.trim());
+    if (parts.length) for (const p of parts) blocks.push(...splitToBodyBlocks(p));
+    else blocks.push({ kind: "body", text: loc === "zh" ? "（无）" : "(None)" });
+
+    blocks.push({ kind: "title2", text: loc === "zh" ? "逻辑摘要" : "Logic summary" });
+    const { y, m, d } = payload.birth;
+    const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const outer = payload.fusion_codes_outer3.join(" · ");
+    const inner =
+      payload.fusion_codes_inner3 && payload.fusion_codes_inner3.length > 0
+        ? payload.fusion_codes_inner3.join(" · ")
+        : "—";
+    blocks.push({ kind: "body", text: `${loc === "zh" ? "阳历生日" : "Solar"}：${iso}` });
+    blocks.push({ kind: "body", text: `${loc === "zh" ? "外圈融合码" : "Outer fusion"}：${outer}` });
+    blocks.push({ kind: "body", text: `${loc === "zh" ? "内圈融合码" : "Inner fusion"}：${inner}` });
+    blocks.push({
+      kind: "body",
+      text: `${loc === "zh" ? "三角形顶点（底色）" : "Triangle apex fill digit"}：${String(payload.inner_top_digit.digit)}`,
+    });
+
+    blocks.push({ kind: "title3", text: loc === "zh" ? "外圈融合（逐组）" : "Outer fusion (each group)" });
+    for (const g of payload.fusion_groups) {
+      blocks.push(...splitToBodyBlocks(fusionGroupToPlainText(g, loc)));
+    }
+    if (payload.inner_fusion_groups && payload.inner_fusion_groups.length > 0) {
+      blocks.push({ kind: "title3", text: loc === "zh" ? "内圈融合（逐组）" : "Inner fusion (each group)" });
+      for (const g of payload.inner_fusion_groups) {
+        blocks.push(...splitToBodyBlocks(fusionGroupToPlainText(g, loc)));
+      }
+    }
+  } else {
+    blocks.push({ kind: "title2", text: loc === "zh" ? "（暂无本地推演 payload）" : "(No local payload)" });
+  }
+
+  blocks.push({ kind: "title2", text: loc === "zh" ? "对话记录" : "Chat log" });
+  for (const m of snapshotCase.messages) {
+    if (m.loading) continue;
+    const c = String(m.content ?? "").trim();
+    if (!c) continue;
+    const role =
+      m.role === "user" ? (loc === "zh" ? "用户" : "User") : loc === "zh" ? "助手" : "Assistant";
+    blocks.push(...splitToBodyBlocks(`${role}：${c}`));
+  }
+
+  return blocks;
 }
 
 export default function App() {
@@ -711,7 +837,8 @@ export default function App() {
   const [submitHint, setSubmitHint] = useState("");
   const [backendBanner, setBackendBanner] = useState<string | null>(null);
   const [cloudHint, setCloudHint] = useState("");
-  const [cloudBusy, setCloudBusy] = useState(false);
+  const [casePanelOpen, setCasePanelOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
 
   const isExport =
     typeof window !== "undefined" && window.location.pathname === "/export";
@@ -743,55 +870,196 @@ export default function App() {
 
   const hasStarted = activeCase.hasStarted;
   const messages = activeCase.messages;
-  const lockedBirthIso = activeCase.lockedBirthIso;
   const birthPicker = activeCase.birthPicker;
-
-  async function saveCaseStoreToServer() {
-    setCloudBusy(true);
-    setCloudHint("");
-    try {
-      const r = await fetch("/api/case-store", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ store: caseStore }),
-      });
-      if (!r.ok) {
-        setCloudHint(locale === "zh" ? "云保存失败" : "Cloud save failed");
-        return;
-      }
-      setCloudHint(locale === "zh" ? "已保存到服务器" : "Saved to server");
-    } catch {
-      setCloudHint(locale === "zh" ? "云保存失败" : "Cloud save failed");
-    } finally {
-      setCloudBusy(false);
-    }
-  }
-
-  async function loadCaseStoreFromServer() {
-    setCloudBusy(true);
-    setCloudHint("");
-    try {
-      const r = await fetch("/api/case-store", { cache: "no-store" });
-      const j = (await r.json()) as { store?: unknown };
-      const loaded = normalizeLoadedCaseStore(j.store, locale);
-      if (!loaded) {
-        setCloudHint(locale === "zh" ? "服务器暂无存档" : "No server snapshot");
-        return;
-      }
-      setCaseStore(loaded);
-      setCloudHint(locale === "zh" ? "已从服务器恢复" : "Restored from server");
-    } catch {
-      setCloudHint(locale === "zh" ? "云恢复失败" : "Cloud restore failed");
-    } finally {
-      setCloudBusy(false);
-    }
-  }
 
   function openPdfExport() {
     const id = caseStore.activeCaseId;
     const url = `/export?caseId=${encodeURIComponent(id)}`;
     window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function sanitizeFileBase(name: string): string {
+    const s = name.replace(/[/\\?%*:|"<>]/g, "-").trim() || "case";
+    return s.length > 80 ? s.slice(0, 80) : s;
+  }
+
+  function triggerBlobDownload(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadCaseStoreBackup() {
+    const raw = JSON.stringify(caseStore, null, 2);
+    const blob = new Blob([raw], { type: "application/json;charset=utf-8" });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    triggerBlobDownload(blob, `xgbm-cases-backup-${stamp}.json`);
+    setCloudHint(locale === "zh" ? "已下载本机备份 JSON" : "Backup JSON downloaded");
+  }
+
+  function deleteCaseById(caseId: string) {
+    const ok =
+      locale === "zh"
+        ? window.confirm("确定删除该案例？此操作不可撤销。")
+        : window.confirm("Delete this case? This cannot be undone.");
+    if (!ok) return;
+    if (caseStore.cases.length <= 1) {
+      setCloudHint(locale === "zh" ? "至少保留一个案例" : "Keep at least one case");
+      return;
+    }
+    setCaseStore((prev) => {
+      const nextCases = prev.cases.filter((c) => c.id !== caseId);
+      const activeCaseId = prev.activeCaseId === caseId ? nextCases[0]!.id : prev.activeCaseId;
+      return { activeCaseId, cases: nextCases };
+    });
+    setCloudHint("");
+  }
+
+  async function openWordExport() {
+    const snapshotCase = activeCase;
+    const snapshotLocale = locale;
+    setExportBusy(true);
+    setCloudHint("");
+    const host = document.createElement("div");
+    host.setAttribute("data-word-capture-host", "true");
+    host.style.cssText =
+      "position:fixed;left:-14000px;top:0;width:740px;z-index:2147483000;overflow:visible;pointer-events:none;";
+    document.body.appendChild(host);
+
+    let uiRoot: ReturnType<typeof createRoot> | null = null;
+    try {
+      const html2canvas = (await import("html2canvas")).default;
+      const { Document, Packer, Paragraph, ImageRun, HeadingLevel } = await import("docx");
+
+      uiRoot = createRoot(host);
+      uiRoot.render(
+        <Suspense
+          fallback={
+            <div className="tv-suspense-fallback" style={{ padding: 24 }}>
+              {snapshotLocale === "zh" ? "正在准备导出版面…" : "Preparing export…"}
+            </div>
+          }
+        >
+          <ReportExportBody caseSession={snapshotCase} locale={snapshotLocale} />
+        </Suspense>,
+      );
+
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+      await new Promise((r) => setTimeout(r, 2200));
+
+      const target =
+        (host.querySelector("[data-word-capture-root]") as HTMLElement | null) ??
+        (host.firstElementChild as HTMLElement | null);
+      if (!target) throw new Error("capture root missing");
+
+      void target.offsetHeight;
+      const winW = Math.max(1, Math.ceil(target.scrollWidth));
+      const winH = Math.max(1, Math.ceil(target.scrollHeight));
+
+      const canvas = await html2canvas(target, {
+        scale: 1.2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: "#0e0e10",
+        logging: false,
+        windowWidth: winW,
+        windowHeight: winH,
+        scrollX: 0,
+        scrollY: 0,
+      });
+
+      const maxDim = 11000;
+      let finalCanvas: HTMLCanvasElement = canvas;
+      if (Math.max(canvas.width, canvas.height) > maxDim) {
+        const r = maxDim / Math.max(canvas.width, canvas.height);
+        const c2 = document.createElement("canvas");
+        c2.width = Math.max(1, Math.floor(canvas.width * r));
+        c2.height = Math.max(1, Math.floor(canvas.height * r));
+        const ctx = c2.getContext("2d");
+        if (!ctx) throw new Error("canvas2d");
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(canvas, 0, 0, c2.width, c2.height);
+        finalCanvas = c2;
+      }
+
+      const pngBlob: Blob | null = await new Promise((resolve) =>
+        finalCanvas.toBlob((b) => resolve(b), "image/png", 0.92),
+      );
+      if (!pngBlob) throw new Error("png encode failed");
+
+      const data = new Uint8Array(await pngBlob.arrayBuffer());
+      const displayW = 620;
+      const displayH = Math.max(1, Math.round((finalCanvas.height / finalCanvas.width) * displayW));
+
+      const title =
+        snapshotCase.title ||
+        (snapshotLocale === "zh" ? "性格编码导出" : "Personality export");
+
+      const narrativeBlocks = buildWordNarrativeBlocks(snapshotCase, snapshotLocale);
+      const narrativeParas: InstanceType<typeof Paragraph>[] = [];
+      for (const b of narrativeBlocks) {
+        if (b.kind === "title2" && b.text.trim()) {
+          narrativeParas.push(new Paragraph({ text: b.text, heading: HeadingLevel.HEADING_2 }));
+        } else if (b.kind === "title3" && b.text.trim()) {
+          narrativeParas.push(new Paragraph({ text: b.text, heading: HeadingLevel.HEADING_3 }));
+        } else if (b.kind === "body" && b.text.trim()) {
+          narrativeParas.push(new Paragraph({ text: b.text }));
+        }
+      }
+
+      const doc = new Document({
+        sections: [
+          {
+            properties: {},
+            children: [
+              new Paragraph({ text: title, heading: HeadingLevel.TITLE }),
+              ...narrativeParas,
+              new Paragraph({
+                text:
+                  snapshotLocale === "zh"
+                    ? "整页版式截图（与 PDF 导出预览一致）"
+                    : "Full-page screenshot (same as PDF export preview)",
+                heading: HeadingLevel.HEADING_2,
+              }),
+              new Paragraph({
+                children: [
+                  new ImageRun({
+                    type: "png",
+                    data,
+                    transformation: { width: displayW, height: displayH },
+                  }),
+                ],
+              }),
+            ],
+          },
+        ],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      triggerBlobDownload(blob, `${sanitizeFileBase(snapshotCase.title)}.docx`);
+      setCloudHint(
+        snapshotLocale === "zh"
+          ? "已下载 Word（前部为可复制正文，后部为整页截图）"
+          : "Word downloaded (text first, full-page screenshot at end)",
+      );
+    } catch {
+      setCloudHint(
+        snapshotLocale === "zh" ? "导出 Word 失败，可改用「导出 PDF」" : "Word export failed; try Export PDF",
+      );
+    } finally {
+      uiRoot?.unmount();
+      host.remove();
+      setExportBusy(false);
+    }
   }
 
   function updateCaseById(caseId: string, updater: (c: CaseSession) => CaseSession) {
@@ -833,7 +1101,7 @@ export default function App() {
     return <ExportPage caseSession={exportCase} locale={locale} />;
   }
 
-  // 引用最新成功的 payload 供左侧可视化使用
+  // 引用最新成功的 payload 供右侧三角可视化使用
   const latestPayload = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].payload) {
@@ -1174,58 +1442,17 @@ export default function App() {
             <p>{t(locale, "headerSubtitle")}</p>
           </div>
           <div className="app-header-actions">
-            <select
-              className="app-case-select"
-              value={caseStore.activeCaseId}
-              onChange={(e) => {
-                const id = e.target.value;
-                setCaseStore((prev) => ({ ...prev, activeCaseId: id }));
-                setSubmitHint("");
-              }}
-              aria-label={locale === "zh" ? "切换案例" : "Switch case"}
-            >
-              {caseStore.cases
-                .slice()
-                .sort((a, b) => b.updatedAt - a.updatedAt)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.title || (locale === "zh" ? "未命名案例" : "Untitled case")}
-                  </option>
-                ))}
-            </select>
             <button
               type="button"
-              className="app-case-new"
+              className="app-case-primary"
               onClick={() => {
-                startNewCaseAndActivate();
-                setInput("");
+                setCasePanelOpen((v) => !v);
                 setSubmitHint("");
               }}
+              aria-expanded={casePanelOpen}
+              aria-controls="case-list-panel"
             >
-              {locale === "zh" ? "新案例" : "New"}
-            </button>
-            <button
-              type="button"
-              className="app-case-new"
-              onClick={saveCaseStoreToServer}
-              disabled={cloudBusy}
-            >
-              {locale === "zh" ? "云保存" : "Save"}
-            </button>
-            <button
-              type="button"
-              className="app-case-new"
-              onClick={loadCaseStoreFromServer}
-              disabled={cloudBusy}
-            >
-              {locale === "zh" ? "云恢复" : "Restore"}
-            </button>
-            <button
-              type="button"
-              className="app-case-new"
-              onClick={openPdfExport}
-            >
-              {locale === "zh" ? "下载PDF" : "PDF"}
+              {locale === "zh" ? "案例" : "Cases"}
             </button>
             <button
               type="button"
@@ -1246,6 +1473,138 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {casePanelOpen ? (
+        <div
+          className="case-panel-backdrop"
+          role="presentation"
+          onClick={() => setCasePanelOpen(false)}
+        >
+          <aside
+            id="case-list-panel"
+            className="case-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label={locale === "zh" ? "案例" : "Cases"}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="case-panel-head">
+              <h2 className="case-panel-title">{locale === "zh" ? "案例" : "Cases"}</h2>
+              <button type="button" className="app-case-new" onClick={() => setCasePanelOpen(false)}>
+                {locale === "zh" ? "关闭" : "Close"}
+              </button>
+            </div>
+            <p className="case-panel-hint note-muted">
+              {locale === "zh"
+                ? "案例与对话自动保存在本浏览器。换电脑或清缓存前，请用「整库备份 JSON」或导出 PDF / Word 存到本机。"
+                : "Cases auto-save in this browser. Before switching devices or clearing cache, use JSON backup or export PDF/Word."}
+            </p>
+
+            <div className="case-panel-section">
+              <div className="case-panel-section-title">
+                {locale === "zh" ? "当前案例" : "Current case"}
+              </div>
+              <label className="case-panel-field">
+                <span>{locale === "zh" ? "名称" : "Name"}</span>
+                <input
+                  className="app-input"
+                  value={activeCase.title}
+                  onChange={(e) =>
+                    updateCaseById(activeCase.id, (c) => ({ ...c, title: e.target.value }))
+                  }
+                  placeholder={locale === "zh" ? "输入名称…" : "Name…"}
+                  maxLength={120}
+                />
+              </label>
+              <div className="case-panel-toolbar">
+                <button
+                  type="button"
+                  className="app-case-new"
+                  onClick={() => {
+                    startNewCaseAndActivate();
+                    setInput("");
+                    setSubmitHint("");
+                  }}
+                >
+                  {locale === "zh" ? "新建案例" : "New case"}
+                </button>
+              </div>
+            </div>
+
+            <div className="case-panel-section">
+              <div className="case-panel-section-title">
+                {locale === "zh" ? "导出到本机" : "Export to this device"}
+              </div>
+              <p className="case-panel-section-hint note-muted">
+                {locale === "zh"
+                  ? "当前选中的案例：PDF 为矢量打印；Word 为与 PDF 预览同版式的整页截图（含三角图）。JSON 为整库备份。"
+                  : "Active case: PDF is vector print; Word is one tall image of the same layout as the PDF preview (incl. diagram). JSON backs up all cases."}
+              </p>
+              <div className="case-panel-toolbar">
+                <button type="button" className="app-case-new" onClick={openPdfExport} disabled={exportBusy}>
+                  {locale === "zh" ? "导出 PDF" : "Export PDF"}
+                </button>
+                <button
+                  type="button"
+                  className="app-case-new"
+                  onClick={() => void openWordExport()}
+                  disabled={exportBusy}
+                >
+                  {locale === "zh" ? "导出 Word" : "Export Word"}
+                </button>
+                <button type="button" className="app-case-new" onClick={downloadCaseStoreBackup}>
+                  {locale === "zh" ? "整库备份 JSON" : "Full JSON backup"}
+                </button>
+              </div>
+            </div>
+
+            <div className="case-panel-section">
+              <div className="case-panel-section-title">
+                {locale === "zh" ? "全部案例" : "All cases"}
+              </div>
+              <ul className="case-panel-list">
+              {caseStore.cases
+                .slice()
+                .sort((a, b) => b.updatedAt - a.updatedAt)
+                .map((c) => (
+                  <li
+                    key={c.id}
+                    className={
+                      c.id === caseStore.activeCaseId ? "case-panel-item is-active" : "case-panel-item"
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="case-panel-item-main"
+                      onClick={() => {
+                        setCaseStore((p) => ({ ...p, activeCaseId: c.id }));
+                        setSubmitHint("");
+                      }}
+                    >
+                      <div className="case-panel-item-title">
+                        {c.title || (locale === "zh" ? "未命名案例" : "Untitled case")}
+                      </div>
+                      <div className="case-panel-item-meta">
+                        {formatTs(c.updatedAt, locale)}
+                        {" · "}
+                        {c.lockedBirthIso || "—"}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      className="case-panel-item-del"
+                      onClick={() => deleteCaseById(c.id)}
+                      aria-label={locale === "zh" ? "删除案例" : "Delete case"}
+                    >
+                      {locale === "zh" ? "删除" : "Del"}
+                    </button>
+                  </li>
+                ))}
+            </ul>
+            </div>
+          </aside>
+        </div>
+      ) : null}
 
       {backendBanner ? (
         <div className="note-muted" style={{ margin: "0 0 10px", flexShrink: 0 }}>
@@ -1306,20 +1665,9 @@ export default function App() {
           </div>
         </div>
       ) : (
-        // === 结果页模式 (Dashboard: 左右分栏) ===
+        // === 结果页模式 (Dashboard：对话在左，三角图在右；窄屏仍上图下文) ===
         <div className="dashboard-container">
-          {/* 左侧可视化区 */}
-          <div className="dashboard-left">
-            <Suspense fallback={<div className="tv-suspense-fallback" />}>
-              <TriangleVisualizer
-                data={latestPayload?.visualization ?? null}
-                birth={latestPayload?.birth ?? null}
-                locale={locale}
-              />
-            </Suspense>
-          </div>
-
-          {/* 右侧对话与结果区 */}
+          {/* 左侧：对话与结果 */}
           <div className="dashboard-right">
             <div className="app-messages" role="log" aria-live="polite">
               {messages.map((msg, i) => (
@@ -1470,6 +1818,17 @@ export default function App() {
                 </p>
               ) : null}
             </form>
+          </div>
+
+          {/* 右侧：三角形可视化 */}
+          <div className="dashboard-left">
+            <Suspense fallback={<div className="tv-suspense-fallback" />}>
+              <TriangleVisualizer
+                data={latestPayload?.visualization ?? null}
+                birth={latestPayload?.birth ?? null}
+                locale={locale}
+              />
+            </Suspense>
           </div>
         </div>
       )}

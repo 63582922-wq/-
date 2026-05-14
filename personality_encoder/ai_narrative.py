@@ -83,7 +83,7 @@ def compact_payload_for_llm(
                 "label": g.get("label"),
                 "code": g.get("code"),
                 "形": g.get("形"),
-                "质_后两位": g.get("质_后两位"),
+                "质_前两位": g.get("质_前两位"),
                 "形质联结": g.get("形质联结"),
             }
             for g in gs or []

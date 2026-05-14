@@ -50,6 +50,16 @@ def add_nine(a: int, b: int) -> int:
     return digital_root(a + b)
 
 
+def assert_fusion_triplet(tri: tuple[int, int, int]) -> None:
+    """融合码三位须满足：末位 = 前两位九进制归约和（与 zl2.0《融合码的理解》一致）。"""
+    a, b, c = tri
+    want = add_nine(a, b)
+    if c != want:
+        raise ValueError(
+            f"融合码异常 {a}{b}{c}：末位应为前两位九进制和 {want}，实际为 {c}"
+        )
+
+
 def validate_date(y: int, m: int, d: int) -> None:
     if not (1 <= m <= 12):
         raise ValueError(f"月份无效：{m}")
@@ -384,7 +394,7 @@ def build_visualization_payload(kn: dict, tr: TriangleResult) -> dict:
 
 
 def _zhi_preview_sentence(kn: dict, a: int, b: int) -> str:
-    """后两位（质）的一句可读摘要。"""
+    """前两位（质 / 基底）板书路径的一句可读摘要。"""
     pb = format_pair_block(kn, a, b)
     if pb and len(pb) >= 3:
         t = pb[-1]
@@ -427,6 +437,12 @@ def _compose_personality_synthesis_en(
                 f"(3) {inner_strs[2]} — apex (deepest layer)."
             ),
             f"Apex fill digit (triangle top): {tr.inner_top}.",
+            "",
+            (
+                "Fusion triple semantics (each six-digit group is three digits): "
+                "first two digits are the substance/base pair; the last digit is the "
+                "outward form digit (base-9 digital root of their sum). Excerpts follow this layout."
+            ),
             "",
             "2. Lecture excerpts",
             (
@@ -519,21 +535,25 @@ def compose_personality_synthesis(
     ]
     for title, tri in zip(inner_titles, inner_codes):
         code_s = f"{tri[0]}{tri[1]}{tri[2]}"
-        x = kn["digits"][str(tri[0])]
-        zhi = _zhi_preview_sentence(kn, tri[1], tri[2])
-        bridge = format_pair_block(kn, tri[0], tri[1])
+        assert_fusion_triplet(tri)
+        zhi = _zhi_preview_sentence(kn, tri[0], tri[1])
+        x = kn["digits"][str(tri[2])]
+        bridge_bc = format_pair_block(kn, tri[1], tri[2])
         lines.append(f"{title}")
-        lines.append(f"　融合码：{code_s}（首位为「形」，后两位为「质」之入门读法）。")
         lines.append(
-            f"　形（数字 {tri[0]}，{x['卦象节气时辰']}）："
+            f"　融合码：{code_s}（前两位为「质」（基底），末位为「形」（九进制归约和）；"
+            f"与 zl2.0《融合码的理解》读本一致）。"
+        )
+        lines.append(f"　质（前两位 {pair_key(tri[0], tri[1])}）：{zhi}")
+        lines.append(
+            f"　形（数字 {tri[2]}，{x['卦象节气时辰']}）："
             f"资源面含「{'；'.join(x['阳面'][:2])}」等；"
             f"张力面含「{'；'.join(x['阴面'][:2])}」等。"
         )
-        lines.append(f"　质（后两位 {pair_key(tri[1], tri[2])}）：{zhi}")
-        if bridge:
+        if bridge_bc:
             lines.append(
-                f"　形质联结补充（前两位 {pair_key(tri[0], tri[1])}）："
-                f"{bridge[-1][5:] if bridge[-1].startswith('倾向摘录：') else bridge[-1]}"
+                f"　形质补充（后两位 {pair_key(tri[1], tri[2])}）："
+                f"{bridge_bc[-1][5:] if bridge_bc[-1].startswith('倾向摘录：') else bridge_bc[-1]}"
             )
         lines.append("")
 
@@ -545,25 +565,29 @@ def compose_personality_synthesis(
     ]
     for idx, (title, tri) in enumerate(zip(titles, codes), start=1):
         code_s = f"{tri[0]}{tri[1]}{tri[2]}"
-        x = kn["digits"][str(tri[0])]
-        zhi = _zhi_preview_sentence(kn, tri[1], tri[2])
-        bridge = format_pair_block(kn, tri[0], tri[1])
+        assert_fusion_triplet(tri)
+        zhi = _zhi_preview_sentence(kn, tri[0], tri[1])
+        x = kn["digits"][str(tri[2])]
+        bridge_bc = format_pair_block(kn, tri[1], tri[2])
         lines.append(f"{title}")
-        lines.append(f"　融合码：{code_s}（首位为「形」，后两位为「质」之入门读法）。")
         lines.append(
-            f"　形（数字 {tri[0]}，{x['卦象节气时辰']}）："
+            f"　融合码：{code_s}（前两位为「质」（基底），末位为「形」（九进制归约和）；"
+            f"与 zl2.0《融合码的理解》读本一致）。"
+        )
+        lines.append(f"　质（前两位 {pair_key(tri[0], tri[1])}）：{zhi}")
+        lines.append(
+            f"　形（数字 {tri[2]}，{x['卦象节气时辰']}）："
             f"资源面含「{'；'.join(x['阳面'][:2])}」等；"
             f"张力面含「{'；'.join(x['阴面'][:2])}」等。"
         )
-        lines.append(f"　质（后两位 {pair_key(tri[1], tri[2])}）：{zhi}")
-        if bridge:
+        if bridge_bc:
             lines.append(
-                f"　形质联结补充（前两位 {pair_key(tri[0], tri[1])}）："
-                f"{bridge[-1][5:] if bridge[-1].startswith('倾向摘录：') else bridge[-1]}"
+                f"　形质补充（后两位 {pair_key(tri[1], tri[2])}）："
+                f"{bridge_bc[-1][5:] if bridge_bc[-1].startswith('倾向摘录：') else bridge_bc[-1]}"
             )
         lines.append("")
 
-    # 六、优势 / 七、张力：从底色与内外圈「形」汇总，去重保序
+    # 六、优势 / 七、张力：从底色与内外圈融合码之「形」（末位）汇总，去重保序
     def _uniq(seq: list[str]) -> list[str]:
         seen: set[str] = set()
         out: list[str] = []
@@ -576,19 +600,21 @@ def compose_personality_synthesis(
     adv: list[str] = []
     adv.extend(base["阳面"])
     for tri in inner_codes:
-        x = kn["digits"][str(tri[0])]
+        assert_fusion_triplet(tri)
+        x = kn["digits"][str(tri[2])]
         adv.extend(x["阳面"][:1])
     for tri in codes:
-        x = kn["digits"][str(tri[0])]
+        assert_fusion_triplet(tri)
+        x = kn["digits"][str(tri[2])]
         adv.extend(x["阳面"][:1])
     adv = _uniq(adv)
     tens: list[str] = []
     tens.extend(base["阴面"])
     for tri in inner_codes:
-        x = kn["digits"][str(tri[0])]
+        x = kn["digits"][str(tri[2])]
         tens.extend(x["阴面"][:1])
     for tri in codes:
-        x = kn["digits"][str(tri[0])]
+        x = kn["digits"][str(tri[2])]
         tens.extend(x["阴面"][:1])
     tens = _uniq(tens)
 
@@ -650,19 +676,21 @@ def load_extensions_bundle(explicit: Path | None = None) -> tuple[dict, Path | N
 def build_fusion_group(
     kn: dict, label: str, tri: tuple[int, int, int]
 ) -> dict:
-    """单组融合码的结构化摘录（形 / 质 / 可选形质联结）。"""
+    """单组融合码的结构化摘录：质=前两位（基底），形=末位（九进制和）；可选后两位板书补充。"""
+    assert_fusion_triplet(tri)
+    a, b, c = tri
     item: dict = {
         "label": label,
-        "code": f"{tri[0]}{tri[1]}{tri[2]}",
+        "code": f"{a}{b}{c}",
         "digits": list(tri),
-        "形": digit_record(kn, tri[0]),
-        "质_后两位": pair_record(kn, tri[1], tri[2]),
+        "形": digit_record(kn, c),
+        "质_前两位": pair_record(kn, a, b),
     }
-    bridge = format_pair_block(kn, tri[0], tri[1])
-    if bridge:
+    bridge_bc = format_pair_block(kn, b, c)
+    if bridge_bc:
         item["形质联结"] = {
-            "pair": pair_key(tri[0], tri[1]),
-            "lines": bridge,
+            "pair": pair_key(b, c),
+            "lines": bridge_bc,
         }
     return item
 
@@ -840,7 +868,9 @@ def build_web_payload(y: int, m: int, d: int, kn: dict, *, locale: str = "zh") -
             "Add pairs upward with base-9 reduction (digital root to 1–9). "
             "Outer ring: left column, right column, top cross; "
             "inner ring: lower-left fusion, lower-right fusion, apex fusion "
-            "(M-left + M-right + apex)."
+            "(M-left + M-right + apex). "
+            "Each fusion triple: first two digits are substance/base; the last digit is "
+            "the outward form digit (base-9 digital root of their sum); read substance then form."
         )
         disclaimer = (
             "Metaphorical self-reflection only; not medical, legal, or HR advice."
@@ -902,6 +932,7 @@ def build_web_payload(y: int, m: int, d: int, kn: dict, *, locale: str = "zh") -
         )
 
     return {
+        "encode_schema_version": 2,
         "birth": {"y": y, "m": m, "d": d},
         "triangle": {
             "boxes8": list(tr.boxes8),
@@ -1152,35 +1183,36 @@ def build_report(
     lines.append("【内圈三组：真实自我 · 亲密关系主轴】")
     for i in range(3):
         tri = inner_triples[i]
+        assert_fusion_triplet(tri)
         lines.append(f"— {inner_ctx[i]}：融合码 {tri[0]}{tri[1]}{tri[2]} —")
-        lines.append(f"形（首位 {tri[0]}）— 《性格编码原理》摘录：")
-        lines.extend(format_digit_block(kn, tri[0]))
-        lines.append("质（后两位动机关联，板书两位数路径）：")
-        pb = format_pair_block(kn, tri[1], tri[2])
+        lines.append(f"质（前两位 {pair_key(tri[0], tri[1])}，九进制归约为末位形 {tri[2]}）：")
+        pb = format_pair_block(kn, tri[0], tri[1])
         if pb:
             lines.extend(pb)
             lines.append(
-                f"依据：板书根数字 {pair_root(tri[1], tri[2])} 路径 {pair_key(tri[1], tri[2])}。"
+                f"依据：板书根数字 {pair_root(tri[0], tri[1])} 路径 {pair_key(tri[0], tri[1])}。"
             )
         else:
-            pr = pair_root(tri[1], tri[2])
+            pr = pair_root(tri[0], tri[1])
             lines.append(
-                f"相邻两位 {pair_key(tri[1], tri[2])} → 根数字 {pr}。"
+                f"相邻两位 {pair_key(tri[0], tri[1])} → 根数字 {pr}。"
                 "九张板书未单独列出该两位数路径；依据来源仍为《性格编码原理》单数字条目，可作整合口径："
+            )
+            lines.append(
+                f"  • {tri[0]}：{kn['digits'][str(tri[0])]['卦象节气时辰']}"
             )
             lines.append(
                 f"  • {tri[1]}：{kn['digits'][str(tri[1])]['卦象节气时辰']}"
             )
-            lines.append(
-                f"  • {tri[2]}：{kn['digits'][str(tri[2])]['卦象节气时辰']}"
-            )
             lines.append(f"  • 根 {pr}：{kn['digits'][str(pr)]['卦象节气时辰']}")
-        pa = format_pair_block(kn, tri[0], tri[1])
-        if pa:
+        lines.append(f"形（末位 {tri[2]}）— 《性格编码原理》摘录：")
+        lines.extend(format_digit_block(kn, tri[2]))
+        pc = format_pair_block(kn, tri[1], tri[2])
+        if pc:
             lines.append(
-                f"补充：前两位 {pair_key(tri[0], tri[1])}（形与质首位联结，板书路径）"
+                f"补充：后两位 {pair_key(tri[1], tri[2])}（质之后位与形数位之板书路径，可选对照）"
             )
-            lines.extend(pa)
+            lines.extend(pc)
 
     lines.append("")
     lines.append("【外圈三组：对外 / 对内 / 对下（面具与外显策略参考）】")
@@ -1196,35 +1228,36 @@ def build_report(
     ]
     for i in range(3):
         tri = codes[i]
+        assert_fusion_triplet(tri)
         lines.append(f"— {ctx[i]}：融合码 {tri[0]}{tri[1]}{tri[2]} —")
-        lines.append(f"形（首位 {tri[0]}）— 《性格编码原理》摘录：")
-        lines.extend(format_digit_block(kn, tri[0]))
-        lines.append("质（后两位动机关联，板书两位数路径）：")
-        pb = format_pair_block(kn, tri[1], tri[2])
+        lines.append(f"质（前两位 {pair_key(tri[0], tri[1])}，九进制归约为末位形 {tri[2]}）：")
+        pb = format_pair_block(kn, tri[0], tri[1])
         if pb:
             lines.extend(pb)
             lines.append(
-                f"依据：板书根数字 {pair_root(tri[1], tri[2])} 路径 {pair_key(tri[1], tri[2])}。"
+                f"依据：板书根数字 {pair_root(tri[0], tri[1])} 路径 {pair_key(tri[0], tri[1])}。"
             )
         else:
-            pr = pair_root(tri[1], tri[2])
+            pr = pair_root(tri[0], tri[1])
             lines.append(
-                f"相邻两位 {pair_key(tri[1], tri[2])} → 根数字 {pr}。"
+                f"相邻两位 {pair_key(tri[0], tri[1])} → 根数字 {pr}。"
                 "九张板书未单独列出该两位数路径；依据来源仍为《性格编码原理》单数字条目，可作整合口径："
+            )
+            lines.append(
+                f"  • {tri[0]}：{kn['digits'][str(tri[0])]['卦象节气时辰']}"
             )
             lines.append(
                 f"  • {tri[1]}：{kn['digits'][str(tri[1])]['卦象节气时辰']}"
             )
-            lines.append(
-                f"  • {tri[2]}：{kn['digits'][str(tri[2])]['卦象节气时辰']}"
-            )
             lines.append(f"  • 根 {pr}：{kn['digits'][str(pr)]['卦象节气时辰']}")
-        pa = format_pair_block(kn, tri[0], tri[1])
-        if pa:
+        lines.append(f"形（末位 {tri[2]}）— 《性格编码原理》摘录：")
+        lines.extend(format_digit_block(kn, tri[2]))
+        pc = format_pair_block(kn, tri[1], tri[2])
+        if pc:
             lines.append(
-                f"补充：前两位 {pair_key(tri[0], tri[1])}（形与质首位联结，板书路径）"
+                f"补充：后两位 {pair_key(tri[1], tri[2])}（质之后位与形数位之板书路径，可选对照）"
             )
-            lines.extend(pa)
+            lines.extend(pc)
 
     lines.append("")
     lines.append(f"── {kn['meta']['disclaimer']} ──")

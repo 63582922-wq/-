@@ -10,6 +10,8 @@
     "preview:lan": "vite preview --host --port 4173"
   },
   "dependencies": {
+    "docx": "^9.6.1",
+    "html2canvas": "^1.4.1",
     "lucide-react": "^1.14.0",
     "lunar-javascript": "^1.7.7",
     "react": "^18.2.0",

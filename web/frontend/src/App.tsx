@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState, useRef, lazy, Suspense, forwardRef } from "react";
 import { createRoot } from "react-dom/client";
-import { messageHasExtractableBirthDate } from "./date-parse";
+import { messageHasResolvableBirth, resolveBirthFromMessage } from "./birth-from-message";
 import {
   LOCALE_STORAGE_KEY,
   type Locale,
@@ -9,9 +9,12 @@ import {
 } from "./i18n";
 import LunarBirthField from "./lunar-birth-field";
 import type { TriangleData } from "./TriangleVisualizer";
-import { SendHorizontal } from "lucide-react";
+import { buildDigitLexicon, type TriangleNodeSelection } from "./triangle-selection";
+import { useSpeechToText, type SpeechFailureKind } from "./useSpeechToText";
+import { Mic, SendHorizontal } from "lucide-react";
 
 const TriangleVisualizer = lazy(() => import("./TriangleVisualizer"));
+const TriangleDigitPanel = lazy(() => import("./TriangleDigitPanel"));
 
 /** 须与 web/backend/main.py 中 API_BUILD_MARK 保持一致 */
 const EXPECTED_API_BUILD_MARK = "reply-source-v10";
@@ -25,6 +28,8 @@ type FusionGroup = {
   label: string;
   code: string;
   digits: number[];
+  质_a?: FusionGroup["形"];
+  质_b?: FusionGroup["形"];
   形: {
     digit: number;
     卦象节气时辰: string;
@@ -42,7 +47,9 @@ type FusionGroup = {
   形质联结?: { pair: string; lines: string[] };
 };
 
-/** 旧版 API / 缓存消息使用 `质_后两位`；新版为 `质_前两位`（zl2.0 语义）。 */
+/**
+ * 旧版 API / 缓存：`质_后两位` 指板书 (b,c)；新版 `质_前两位` 指质 (a,b)，与 fusion-terms 一致。
+ */
 type FusionGroupLoose = Partial<FusionGroup> & {
   质_后两位?: FusionGroup["质_前两位"];
 };
@@ -76,6 +83,8 @@ type AgentPayload = {
   algorithm_note?: string;
   encode_schema_version?: number;
   inner_top_digit: FusionGroup["形"];
+  /** 1–9 单数字讲义（看板「N核心」回退） */
+  digit_lexicon?: Record<string, FusionGroup["形"]>;
   fusion_groups: FusionGroup[];
   inner_fusion_groups?: FusionGroup[];
   disclaimer: string;
@@ -839,6 +848,14 @@ export default function App() {
   const [cloudHint, setCloudHint] = useState("");
   const [casePanelOpen, setCasePanelOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [triangleSelection, setTriangleSelection] = useState<TriangleNodeSelection | null>(
+    null,
+  );
+  const chatInputRef = useRef<HTMLInputElement>(null);
+  const landingInputRef = useRef<HTMLInputElement>(null);
+  const speechAutoSubmitRef = useRef(false);
+  const submitMessageRef = useRef<(forcedText?: string) => Promise<void>>(async () => {});
+  const speech = useSpeechToText(locale);
 
   const isExport =
     typeof window !== "undefined" && window.location.pathname === "/export";
@@ -869,6 +886,64 @@ export default function App() {
   }, [activeCase, caseStore.activeCaseId]);
 
   const hasStarted = activeCase.hasStarted;
+
+  function speechFailureHint(kind: SpeechFailureKind): string {
+    if (kind === "not-allowed") return t(locale, "speechMicDenied");
+    if (kind === "network") return t(locale, "speechNetwork");
+    return t(locale, "speechNoHeard");
+  }
+
+  speech.bindOnTranscript((text) => {
+    if (speechAutoSubmitRef.current) {
+      speechAutoSubmitRef.current = false;
+      setInput(text);
+      setSubmitHint("");
+      void submitMessageRef.current(text);
+      return;
+    }
+    setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+    setSubmitHint("");
+  });
+
+  speech.bindOnFailure((kind) => {
+    speechAutoSubmitRef.current = false;
+    setSubmitHint(speechFailureHint(kind));
+  });
+
+  function toggleLandingSpeech() {
+    if (busy) return;
+    landingInputRef.current?.focus();
+    speechAutoSubmitRef.current = true;
+    speech.toggle();
+  }
+
+  function toggleChatSpeech() {
+    if (busy) return;
+    chatInputRef.current?.focus();
+    speechAutoSubmitRef.current = false;
+    speech.toggle();
+  }
+
+  useEffect(() => {
+    if (busy) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat) return;
+      const onLanding =
+        !hasStarted && landingInputRef.current === document.activeElement;
+      const onChat =
+        hasStarted && chatInputRef.current === document.activeElement;
+      if (!onLanding && !onChat) return;
+      e.preventDefault();
+      speechAutoSubmitRef.current = onLanding;
+      speech.toggle();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [hasStarted, busy, speech]);
+
+  useEffect(() => {
+    if (busy) speech.stop();
+  }, [busy, speech]);
   const messages = activeCase.messages;
   const birthPicker = activeCase.birthPicker;
 
@@ -1111,6 +1186,23 @@ export default function App() {
     return null;
   }, [messages]);
 
+  const digitLexicon = useMemo(
+    () =>
+      buildDigitLexicon(
+        latestPayload
+          ? {
+              ...latestPayload,
+              visualization: latestPayload.visualization ?? null,
+            }
+          : null,
+      ),
+    [latestPayload],
+  );
+
+  useEffect(() => {
+    setTriangleSelection(null);
+  }, [latestPayload?.visualization, latestPayload?.birth?.y, latestPayload?.birth?.m, latestPayload?.birth?.d]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -1169,21 +1261,30 @@ export default function App() {
     };
   }, [locale]);
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    const text = input.trim();
+  async function submitMessage(forcedText?: string) {
+    const text = (forcedText ?? input).trim();
     const current = activeCaseRef.current;
     const iso = current.birthPicker.trim();
-    const hasDateInMessage = messageHasExtractableBirthDate(text);
+    const resolvedBirth = resolveBirthFromMessage(text);
+    const hasDateInMessage = messageHasResolvableBirth(text);
     const canResolveBirth =
       hasDateInMessage ||
       Boolean(iso) ||
       (Boolean(current.lockedBirthIso) && Boolean(text) && !hasDateInMessage);
     if (!canResolveBirth) {
-      setSubmitHint(t(locale, "submitHintNoBirth"));
+      const heard = (forcedText ?? "").trim();
+      setSubmitHint(
+        heard
+          ? t(locale, "submitHintNoBirthHeard", { text: heard.slice(0, 48) })
+          : t(locale, "submitHintNoBirth"),
+      );
+      if (heard) setInput(heard);
       return;
     }
-    const userLine = text || (iso ? `${t(locale, "computeSolarPrefix")} ${iso}` : "");
+    let userLine = text || (iso ? `${t(locale, "computeSolarPrefix")} ${iso}` : "");
+    if (resolvedBirth?.mode === "lunar" && resolvedBirth.lunarNote) {
+      userLine = `${text}（${resolvedBirth.lunarNote} → ${locale === "zh" ? "公历" : "Gregorian"} ${resolvedBirth.iso}）`;
+    }
     if (!userLine.trim()) {
       setSubmitHint(t(locale, "submitHintEmpty"));
       return;
@@ -1216,11 +1317,17 @@ export default function App() {
       updateCaseById(targetCaseId, (c) => ({ ...c, hasStarted: true }));
     }
 
-    const birthFromPicker = hasDateInMessage
-      ? ""
-      : text
-        ? current.lockedBirthIso || iso
-        : iso;
+    if (resolvedBirth && !current.hasStarted) {
+      updateCaseById(targetCaseId, (c) => ({ ...c, birthPicker: resolvedBirth.iso }));
+    }
+
+    const birthFromPicker = resolvedBirth?.iso
+      ? resolvedBirth.iso
+      : hasDateInMessage
+        ? ""
+        : text
+          ? current.lockedBirthIso || iso
+          : iso;
     const followUpOnly =
       Boolean(current.lockedBirthIso) && Boolean(text) && !hasDateInMessage && !needNewCase;
 
@@ -1433,6 +1540,13 @@ export default function App() {
     }
   }
 
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    await submitMessage();
+  }
+
+  submitMessageRef.current = submitMessage;
+
   return (
     <div className={`app-shell ${hasStarted ? "app-started" : "app-landing"}`}>
       <header className="app-header">
@@ -1639,19 +1753,42 @@ export default function App() {
                     setSubmitHint("");
                   }}
                 />
-                <input
-                  className="app-input landing-input"
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    setSubmitHint("");
-                  }}
-                  placeholder={t(locale, "placeholderInput")}
-                  disabled={busy}
-                  enterKeyHint="send"
-                  autoComplete="off"
-                  inputMode="text"
-                />
+                {speech.supported ? (
+                  <p className="landing-speech-hint">{t(locale, "speechHintLanding")}</p>
+                ) : (
+                  <p className="landing-speech-hint">{t(locale, "speechUnsupported")}</p>
+                )}
+                {speech.listening ? (
+                  <p className="landing-speech-recording">{t(locale, "speechRecordingLanding")}</p>
+                ) : null}
+                <div className={`landing-input-row${speech.listening ? " landing-input-row--recording" : ""}`}>
+                  <input
+                    ref={landingInputRef}
+                    className={`app-input landing-input${speech.listening ? " landing-input--recording" : ""}`}
+                    value={input}
+                    onChange={(e) => {
+                      setInput(e.target.value);
+                      setSubmitHint("");
+                    }}
+                    placeholder={t(locale, "placeholderInput")}
+                    disabled={busy}
+                    enterKeyHint="send"
+                    autoComplete="off"
+                    inputMode="text"
+                  />
+                  {speech.supported ? (
+                    <button
+                      type="button"
+                      className={`app-mic-btn${speech.listening ? " app-mic-btn--active" : ""}`}
+                      onClick={toggleLandingSpeech}
+                      disabled={busy}
+                      aria-label={t(locale, "speechMic")}
+                      title={t(locale, "speechHintLanding")}
+                    >
+                      <Mic size={20} />
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <button type="submit" className="landing-submit" disabled={busy}>
                 {busy ? t(locale, "sendBusy") : t(locale, "send")}
@@ -1665,10 +1802,26 @@ export default function App() {
           </div>
         </div>
       ) : (
-        // === 结果页模式 (Dashboard：对话在左，三角图在右；窄屏仍上图下文) ===
+        // === 结果页：左列上为数字看板、下为对话；右列为三角图 ===
         <div className="dashboard-container">
-          {/* 左侧：对话与结果 */}
-          <div className="dashboard-right">
+          <div className="dashboard-combined">
+            <Suspense fallback={<div className="tv-digit-panel tv-digit-panel--loading" />}>
+              <TriangleDigitPanel
+                data={latestPayload?.visualization ?? null}
+                digitLexicon={digitLexicon}
+                encodeSchemaVersion={latestPayload?.encode_schema_version}
+                selection={triangleSelection}
+                locale={locale}
+                onClear={() => setTriangleSelection(null)}
+              />
+            </Suspense>
+            <div className="dashboard-chat">
+            <div className="dashboard-chat-head">
+              <h2 className="dashboard-chat-title">{t(locale, "chatTitle")}</h2>
+              {speech.listening ? (
+                <span className="dashboard-chat-status">{t(locale, "speechRecording")}</span>
+              ) : null}
+            </div>
             <div className="app-messages" role="log" aria-live="polite">
               {messages.map((msg, i) => (
                 <div
@@ -1794,8 +1947,14 @@ export default function App() {
             </div>
 
             <form className="dashboard-footer" onSubmit={onSubmit}>
-              <div className="app-compose">
+              {speech.supported ? (
+                <p className="dashboard-chat-hint">{t(locale, "speechHint")}</p>
+              ) : (
+                <p className="dashboard-chat-hint">{t(locale, "speechUnsupported")}</p>
+              )}
+              <div className={`app-compose${speech.listening ? " app-compose--recording" : ""}`}>
                 <input
+                  ref={chatInputRef}
                   className="app-input"
                   value={input}
                   onChange={(e) => {
@@ -1808,6 +1967,18 @@ export default function App() {
                   autoComplete="off"
                   inputMode="text"
                 />
+                {speech.supported ? (
+                  <button
+                    type="button"
+                    className={`app-mic-btn${speech.listening ? " app-mic-btn--active" : ""}`}
+                    onClick={toggleChatSpeech}
+                    disabled={busy}
+                    aria-label={t(locale, "speechMic")}
+                    title={t(locale, "speechHint")}
+                  >
+                    <Mic size={20} />
+                  </button>
+                ) : null}
                 <button type="submit" className="app-send-icon-btn" disabled={busy || !input.trim()}>
                   <SendHorizontal size={20} />
                 </button>
@@ -1818,6 +1989,7 @@ export default function App() {
                 </p>
               ) : null}
             </form>
+            </div>
           </div>
 
           {/* 右侧：三角形可视化 */}
@@ -1827,6 +1999,8 @@ export default function App() {
                 data={latestPayload?.visualization ?? null}
                 birth={latestPayload?.birth ?? null}
                 locale={locale}
+                selection={triangleSelection}
+                onSelectionChange={setTriangleSelection}
               />
             </Suspense>
           </div>

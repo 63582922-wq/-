@@ -25,7 +25,7 @@ echo ""
 echo "须先打包前端： cd web/frontend && npm run build"
 echo ""
 echo "重要：拉代码或改 .env / web/backend 后，务必关掉旧 uvicorn 再运行本脚本，否则手机仍会命中旧接口（秒回、无 reply_source）。"
-echo "自检：浏览器打开 http://<IP>:8000/api/status 应看到 build_mark=reply-source-v9"
+echo "自检：浏览器打开 http://<IP>:8000/api/status 应看到 build_mark=reply-source-v10"
 echo ""
 
 exec python3 -m uvicorn web.backend.main:app --host 0.0.0.0 --port 8000

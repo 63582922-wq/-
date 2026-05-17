@@ -319,22 +319,18 @@ def pair_record(kn: dict, a: int, b: int) -> dict:
 
 
 def visualization_node(kn: dict, node_id: str, a: int, b: int, result: int) -> dict:
+    """三角图单步融合节点：source_digits=[质,质]，result_digit=形；traits/lines=质_前两位板书。"""
     rec = pair_record(kn, a, b)
     def _digit_preview(d: int) -> dict:
+        """单数字完整讲义（看板「N核心」与 build_fusion_group 的 质_a/质_b/形 同源）。"""
         res = digit_record(kn, d)
-        labels: list[str] = []
-        for k in ("卦象节气时辰", "核心物理属性"):
-            v = res.get(k)
-            if isinstance(v, str) and v.strip():
-                labels.append(v.strip())
-        lines: list[str] = []
-        for s in (res.get("阳面") or [])[:2]:
-            if isinstance(s, str) and s.strip():
-                lines.append(f"阳面：{s.strip()}")
-        for s in (res.get("阴面") or [])[:2]:
-            if isinstance(s, str) and s.strip():
-                lines.append(f"阴面：{s.strip()}")
-        return {"digit": int(res.get("digit", d)), "labels": labels, "lines": lines}
+        return {
+            "digit": int(res.get("digit", d)),
+            "卦象节气时辰": res.get("卦象节气时辰", ""),
+            "核心物理属性": res.get("核心物理属性", ""),
+            "阳面": list(res.get("阳面") or []),
+            "阴面": list(res.get("阴面") or []),
+        }
 
     res_record = _digit_preview(result)
     source_records = [_digit_preview(a), _digit_preview(b)]
@@ -439,7 +435,7 @@ def _compose_personality_synthesis_en(
             f"Apex fill digit (triangle top): {tr.inner_top}.",
             "",
             (
-                "Fusion triple semantics (each six-digit group is three digits): "
+                "Fusion triple semantics (each group is three digits): "
                 "first two digits are the substance/base pair; the last digit is the "
                 "outward form digit (base-9 digital root of their sum). Excerpts follow this layout."
             ),
@@ -684,6 +680,8 @@ def build_fusion_group(
         "code": f"{a}{b}{c}",
         "digits": list(tri),
         "形": digit_record(kn, c),
+        "质_a": digit_record(kn, a),
+        "质_b": digit_record(kn, b),
         "质_前两位": pair_record(kn, a, b),
     }
     bridge_bc = format_pair_block(kn, b, c)
@@ -997,6 +995,7 @@ def build_web_payload(y: int, m: int, d: int, kn: dict, *, locale: str = "zh") -
         "fusion_labels": ctx_labels,
         "fusion_inner_labels": inner_labels,
         "inner_top_digit": digit_record(kn, tr.inner_top),
+        "digit_lexicon": {str(i): digit_record(kn, i) for i in range(1, 10)},
         "fusion_groups": groups,
         "inner_fusion_groups": inner_groups,
         "interpretation_frame": interpretation_frame,

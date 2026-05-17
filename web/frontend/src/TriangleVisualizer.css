@@ -250,20 +250,208 @@
   text-shadow: 0 0 16px rgba(124, 92, 255, 0.4);
 }
 
-/* === Hover Preview Card === */
+.tv-num-node.is-clickable,
+.tv-fraction-top.is-clickable,
+.tv-fraction-bottom > span.is-clickable {
+  cursor: pointer;
+}
+
+.tv-num-node.is-clickable:focus-visible,
+.tv-fraction-top.is-clickable:focus-visible,
+.tv-fraction-bottom > span.is-clickable:focus-visible {
+  outline: 2px solid var(--primary, #7c3aed);
+  outline-offset: 2px;
+}
+
+/* === 左侧数字看板（固定展示，非悬浮） === */
+.tv-digit-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+}
+
+.tv-digit-panel--loading {
+  min-height: 120px;
+}
+
+.tv-digit-panel-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.tv-digit-panel-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: var(--heading-weight, 700);
+  color: var(--heading-color, var(--text));
+}
+
+.tv-digit-panel-clear {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tv-digit-panel-clear:hover {
+  color: var(--text);
+  border-color: var(--border-hover);
+}
+
+.tv-digit-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+.tv-digit-panel-empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.tv-digit-panel-context {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary, #a58fff);
+}
+
+.tv-digit-panel-click-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tv-digit-panel-section-title {
+  margin: 14px 0 8px;
+  font-size: 14px;
+  font-weight: var(--heading-weight, 700);
+  color: var(--heading-color, var(--text));
+}
+
+.tv-digit-panel-section-title:first-of-type {
+  margin-top: 0;
+}
+
+.tv-digit-panel-core-label {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: var(--heading-weight, 700);
+  color: var(--heading-color, var(--text));
+}
+
+.tv-digit-core-prose {
+  margin: 0 0 12px;
+  padding-left: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  border-left: none;
+}
+
+.tv-digit-substance-block {
+  margin-bottom: 10px;
+}
+
+.tv-digit-origin-nested {
+  margin: 0 0 12px 8px;
+  padding: 10px 10px 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, var(--primary) 8%);
+}
+
+.tv-digit-origin-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary, #a58fff);
+}
+
+.tv-digit-panel-section-title--nested {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.tv-digit-panel-role {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tv-digit-panel-line {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.tv-digit-panel-line--label {
+  margin-top: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.tv-digit-panel-muted {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.tv-digit-panel-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.tv-digit-core-block {
+  margin-bottom: 8px;
+}
+
+.tv-digit-panel-board {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.tv-digit-panel-board-img {
+  display: block;
+  max-width: 100%;
+  margin-top: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
 .tv-preview-card {
-  position: absolute;
-  top: 20px;
-  right: 20px;
-  z-index: 10;
-  width: 280px;
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  background: rgba(15, 18, 25, 0.95);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(12px);
-  pointer-events: none; /* Let hover pass through */
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-app);
+  box-shadow: none;
+}
+
+.tv-preview-card--dock {
+  position: static;
+  pointer-events: auto;
 }
 
 .tv-preview-head {

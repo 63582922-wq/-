@@ -22,8 +22,13 @@ const STRINGS = {
       "自检接口不可用（多为旧后端仍在占用端口）：请停掉旧进程后在仓库根目录启动 uvicorn，并 npm run build 后强刷页面。",
     backendBannerVersion: "后端与前端版本不一致：重启 uvicorn 并强刷页面即可。",
     submitHintNoBirth:
-      "尚未识别到可用的阳历生日：请选择阴历并确认、在右侧输入阳历，或在完成一次测算后直接输入追问内容。",
+      "尚未识别到可用的阳历生日：请选择阴历并确认、在输入框输入阳历，或在完成一次测算后直接输入追问内容。",
+    submitHintNoBirthHeard:
+      "已听到「{text}」，但未识别到生日。请说「阴历1994年三月初八」「阳历1994年3月8日」或「19940308」，或先点上方选阴历。",
     submitHintEmpty: "请输入要问的内容，或选择生日后发送。",
+    speechNoHeard: "未识别到语音内容，请靠近麦克风重试，或改用键盘输入。",
+    speechMicDenied: "无法使用麦克风：请在浏览器设置中允许本站点使用麦克风后刷新页面。",
+    speechNetwork: "语音服务网络异常，请检查网络或改用键盘输入。",
     loadingReply: "正在回复…",
     loadingLocal: "第一步：正在完成本地推算（三角形与融合码）…",
     loadingAi: "分析生成中。。。。",
@@ -62,9 +67,17 @@ const STRINGS = {
     sectionOuter: "外圈 · 融合码与讲义摘录",
     digitLinePrefix: "顶点讲义 ·",
     personalityTemplateDetails: "讲义模版全文（对照）",
-    placeholderInput: "生日或追问：19940308 / 内圈第三组是什么意思",
+    placeholderInput: "阴历/阳历生日或追问：阴历1994年三月初八、19940308…",
     send: "发送",
     sendBusy: "…",
+    chatTitle: "AI 对话",
+    speechRecording: "录音中… 再按空格结束并转写",
+    speechRecordingLanding: "录音中… 再按空格结束并发送",
+    speechHint: "按空格开始录音，再按空格结束并写入输入框",
+    speechHintLanding:
+      "点麦克风或按空格录音：说「阴历1994年三月初八」会换算公历；说「阳历」或直接说日期则按公历发送",
+    speechUnsupported: "当前浏览器不支持语音转文字，请改用 Chrome 或 Safari。",
+    speechMic: "语音输入",
     lunarTriggerEmpty: "点击选择阴历生日（将自动换算为公历用于测算）",
     lunarLineLunar: "阴历：",
     lunarLineSolar: "已换算公历：",
@@ -95,8 +108,13 @@ const STRINGS = {
       "Health check unavailable (often an old server still on the port). Stop the old process, start uvicorn from the repo root, run npm run build, then hard-refresh.",
     backendBannerVersion: "Frontend and backend versions differ: restart uvicorn and hard-refresh.",
     submitHintNoBirth:
-      "No usable Gregorian date yet: pick lunar and confirm, type a solar date on the right, or (after one successful run) type a follow-up question.",
+      "No usable Gregorian date yet: pick lunar and confirm, type a solar date in the box, or (after one successful run) type a follow-up question.",
+    submitHintNoBirthHeard:
+      "Heard “{text}” but no birth date found. Try “lunar March 8, 1994”, “solar 1994-03-08”, or “19940308”.",
     submitHintEmpty: "Type a question, or pick a birth date before sending.",
+    speechNoHeard: "No speech detected. Move closer to the mic or type instead.",
+    speechMicDenied: "Microphone blocked. Allow mic access for this site and refresh.",
+    speechNetwork: "Speech service network error. Check your connection or type instead.",
     loadingReply: "Replying…",
     loadingLocal: "Step 1: local chart (triangle & fusion codes)…",
     loadingAi: "Generating analysis…",
@@ -138,6 +156,14 @@ const STRINGS = {
     placeholderInput: "Birth or follow-up: 19940308 / what does inner ring 3 mean?",
     send: "Send",
     sendBusy: "…",
+    chatTitle: "AI chat",
+    speechRecording: "Recording… press Space again to transcribe",
+    speechRecordingLanding: "Recording… press Space again to send",
+    speechHint: "Press Space to start, Space again to add text to the box",
+    speechHintLanding:
+      "Mic or Space to record: say “lunar 1994-03-08” (lunar calendar, converted); “solar” or a plain date = Gregorian",
+    speechUnsupported: "Speech-to-text is not supported in this browser. Try Chrome or Safari.",
+    speechMic: "Voice input",
     lunarTriggerEmpty: "Tap to pick lunar birth (converted to Gregorian for the chart)",
     lunarLineLunar: "Lunar: ",
     lunarLineSolar: "Gregorian: ",
@@ -158,7 +184,12 @@ const STRINGS = {
 
 export type MsgKey = keyof typeof STRINGS.zh;
 
-export function t(locale: Locale, key: MsgKey): string {
-  const pack = STRINGS[locale];
-  return (pack[key] as string) ?? (STRINGS.zh[key] as string);
+export function t(locale: Locale, key: MsgKey, vars?: Record<string, string>): string {
+  let s = (STRINGS[locale][key] as string) ?? (STRINGS.zh[key] as string);
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      s = s.replaceAll(`{${k}}`, v);
+    }
+  }
+  return s;
 }

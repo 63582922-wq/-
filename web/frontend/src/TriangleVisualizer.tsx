@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  toggleTriangleSelection,
+  type TriangleNodePart,
+  type TriangleNodeSelection,
+} from "./triangle-selection";
 import "./TriangleVisualizer.css";
 
 type VisualPairDetail = {
@@ -13,13 +18,17 @@ type VisualPairDetail = {
   lines: string[];
   result_record?: {
     digit: number;
-    labels: string[];
-    lines: string[];
+    卦象节气时辰?: string;
+    核心物理属性?: string;
+    阳面?: string[];
+    阴面?: string[];
   };
   source_records?: Array<{
     digit: number;
-    labels: string[];
-    lines: string[];
+    卦象节气时辰?: string;
+    核心物理属性?: string;
+    阳面?: string[];
+    阴面?: string[];
   }>;
 };
 
@@ -41,24 +50,12 @@ interface TriangleVisualizerProps {
   birth?: { y: number; m: number; d: number } | null;
   locale?: "zh" | "en";
   mode?: "interactive" | "export";
+  /** 受控选中（点击固定；再点同一格取消） */
+  selection?: TriangleNodeSelection | null;
+  onSelectionChange?: (sel: TriangleNodeSelection | null) => void;
 }
 
 const DELAY_MULTIPLIER = 0.5;
-
-function compactLabels(labels?: string[]): string[] {
-  if (!labels || labels.length === 0) return [];
-  return labels
-    .slice(0, 2)
-    .map((label) => label.replace(/（[^）]*）/g, "").replace(/\([^)]*\)/g, "").trim())
-    .filter(Boolean);
-}
-
-function formatSourceEquation(detail?: VisualPairDetail) {
-  if (!detail || !Array.isArray(detail.source_digits) || detail.source_digits.length < 2) {
-    return "";
-  }
-  return `${detail.source_digits[0]} + ${detail.source_digits[1]}`;
-}
 
 type NodeSpec = {
   key: string;
@@ -79,13 +76,54 @@ export default function TriangleVisualizer({
   data,
   locale = "zh",
   mode = "interactive",
+  selection = null,
+  onSelectionChange,
 }: TriangleVisualizerProps) {
   const interactive = mode === "interactive";
-  const [activeHover, setActiveHover] = useState<
-    | { nodeId: string; part: "result" | "a" | "b" }
-    | null
-  >(null);
-  
+
+  const pick = (nodeId: string, part: TriangleNodePart) => {
+    if (!interactive || !onSelectionChange) return;
+    onSelectionChange(toggleTriangleSelection(selection, { nodeId, part }));
+  };
+
+  const isActive = (nodeId: string, part: TriangleNodePart) =>
+    selection?.nodeId === nodeId && selection?.part === part;
+
+  const renderFractionPair = (
+    nodeId: "ol" | "or" | "down",
+    value: number,
+    pairText: string,
+  ) => (
+    <div className="tv-fraction">
+      <div
+        className={`tv-fraction-top ${isActive(nodeId, "result") ? "is-active" : ""}${interactive ? " is-clickable" : ""}`}
+        onClick={interactive ? () => pick(nodeId, "result") : undefined}
+      >
+        {value}
+      </div>
+      <div className="tv-fraction-bottom">
+        {pairText.length === 2 ? (
+          <>
+            <span
+              className={`${isActive(nodeId, "a") ? "is-active" : ""}${interactive ? " is-clickable" : ""}`}
+              onClick={interactive ? () => pick(nodeId, "a") : undefined}
+            >
+              {pairText[0]}
+            </span>
+            <span
+              className={`${isActive(nodeId, "b") ? "is-active" : ""}${interactive ? " is-clickable" : ""}`}
+              onClick={interactive ? () => pick(nodeId, "b") : undefined}
+            >
+              {pairText[1]}
+            </span>
+          </>
+        ) : (
+          pairText
+        )}
+      </div>
+    </div>
+  );
+
   const safeData = useMemo(
     () => ({
       boxes8: Array.isArray(data?.boxes8) ? data!.boxes8 : [0, 0, 0, 0, 0, 0, 0, 0],
@@ -121,14 +159,6 @@ export default function TriangleVisualizer({
     ];
     return () => timers.forEach(clearTimeout);
   }, [data]);
-
-  useEffect(() => {
-    if (!data) {
-      setActiveHover(null);
-      return;
-    }
-    setActiveHover(null);
-  }, [data, interactive]);
 
   const {
     inner_bottom,
@@ -167,18 +197,6 @@ export default function TriangleVisualizer({
     ],
     [inner_bottom, inner_mid, inner_top, outer_left, outer_right, apex_outer],
   );
-
-  const nodeMap = useMemo(
-    () =>
-      Object.fromEntries(
-        nodes
-          .filter((node) => Boolean(node.detail))
-          .map((node) => [node.key, node.detail as VisualPairDetail]),
-      ),
-    [nodes],
-  );
-
-  const activeDetail = activeHover ? nodeMap[activeHover.nodeId] : undefined;
 
   if (!data) {
     return (
@@ -253,10 +271,21 @@ export default function TriangleVisualizer({
             {nodes.filter(n => n.kind === "main" && shownStage >= n.stage).map(node => (
               <div 
                 key={node.key} 
-                className={`tv-num-node tv-fade-in ${activeHover?.nodeId === node.key && activeHover.part === "result" ? "is-active" : ""}`}
+                className={`tv-num-node tv-fade-in ${isActive(node.key, "result") ? "is-active" : ""}${interactive ? " is-clickable" : ""}`}
                 style={{ left: `${(node.x / VIEW_W) * 100}%`, top: `${(node.y / VIEW_H) * 100}%` }}
-                onMouseEnter={interactive ? () => setActiveHover({ nodeId: node.key, part: "result" }) : undefined}
-                onMouseLeave={interactive ? () => setActiveHover(null) : undefined}
+                onClick={interactive ? () => pick(node.key, "result") : undefined}
+                onKeyDown={
+                  interactive
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          pick(node.key, "result");
+                        }
+                      }
+                    : undefined
+                }
+                role={interactive ? "button" : undefined}
+                tabIndex={interactive ? 0 : undefined}
               >
                 {node.value}
               </div>
@@ -264,212 +293,51 @@ export default function TriangleVisualizer({
 
             {/* 对外（左侧） */}
             {shownStage >= 4 && (
-              <div 
+              <div
                 className="tv-outer-group tv-outer-left tv-fade-in"
-                style={{ left: '16%', top: '41.5%' }}
+                style={{ left: "16%", top: "41.5%" }}
               >
                 <div className="tv-outer-title">对外</div>
-                <div 
-                  className="tv-fraction"
-                  onMouseLeave={interactive ? () => setActiveHover(null) : undefined}
-                >
-                  <div
-                    className={`tv-fraction-top ${activeHover?.nodeId === "ol" && activeHover.part === "result" ? "is-active" : ""}`}
-                    onMouseEnter={interactive ? () => setActiveHover({ nodeId: "ol", part: "result" }) : undefined}
-                  >
-                    {nodes.find(n => n.key === "ol")?.value}
-                  </div>
-                  <div className="tv-fraction-bottom">
-                    {(() => {
-                      const pair = nodes.find(n => n.key === "ol")?.pairText ?? "";
-                      if (pair.length !== 2) return pair;
-                      const a = pair[0];
-                      const b = pair[1];
-                      return (
-                        <>
-                          <span
-                            className={activeHover?.nodeId === "ol" && activeHover.part === "a" ? "is-active" : ""}
-                            onMouseEnter={interactive ? () => setActiveHover({ nodeId: "ol", part: "a" }) : undefined}
-                          >
-                            {a}
-                          </span>
-                          <span
-                            className={activeHover?.nodeId === "ol" && activeHover.part === "b" ? "is-active" : ""}
-                            onMouseEnter={interactive ? () => setActiveHover({ nodeId: "ol", part: "b" }) : undefined}
-                          >
-                            {b}
-                          </span>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
+                {renderFractionPair(
+                  "ol",
+                  nodes.find((n) => n.key === "ol")?.value ?? 0,
+                  nodes.find((n) => n.key === "ol")?.pairText ?? "",
+                )}
               </div>
             )}
 
             {/* 对内（右侧） */}
             {shownStage >= 4 && (
-              <div 
+              <div
                 className="tv-outer-group tv-outer-right tv-fade-in"
-                style={{ left: '84%', top: '41.5%' }}
+                style={{ left: "84%", top: "41.5%" }}
               >
-                <div 
-                  className="tv-fraction"
-                  onMouseLeave={interactive ? () => setActiveHover(null) : undefined}
-                >
-                  <div
-                    className={`tv-fraction-top ${activeHover?.nodeId === "or" && activeHover.part === "result" ? "is-active" : ""}`}
-                    onMouseEnter={interactive ? () => setActiveHover({ nodeId: "or", part: "result" }) : undefined}
-                  >
-                    {nodes.find(n => n.key === "or")?.value}
-                  </div>
-                  <div className="tv-fraction-bottom">
-                    {(() => {
-                      const pair = nodes.find(n => n.key === "or")?.pairText ?? "";
-                      if (pair.length !== 2) return pair;
-                      const a = pair[0];
-                      const b = pair[1];
-                      return (
-                        <>
-                          <span
-                            className={activeHover?.nodeId === "or" && activeHover.part === "a" ? "is-active" : ""}
-                            onMouseEnter={interactive ? () => setActiveHover({ nodeId: "or", part: "a" }) : undefined}
-                          >
-                            {a}
-                          </span>
-                          <span
-                            className={activeHover?.nodeId === "or" && activeHover.part === "b" ? "is-active" : ""}
-                            onMouseEnter={interactive ? () => setActiveHover({ nodeId: "or", part: "b" }) : undefined}
-                          >
-                            {b}
-                          </span>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
+                {renderFractionPair(
+                  "or",
+                  nodes.find((n) => n.key === "or")?.value ?? 0,
+                  nodes.find((n) => n.key === "or")?.pairText ?? "",
+                )}
                 <div className="tv-outer-title">对内</div>
               </div>
             )}
 
             {/* 对下（顶部） */}
             {shownStage >= 4 && (
-              <div 
+              <div
                 className="tv-outer-group tv-outer-top tv-fade-in"
-                style={{ left: '50%', top: '4%' }}
+                style={{ left: "50%", top: "4%" }}
               >
                 <div className="tv-outer-title">对下</div>
-                <div 
-                  className="tv-fraction"
-                  onMouseLeave={interactive ? () => setActiveHover(null) : undefined}
-                >
-                  <div
-                    className={`tv-fraction-top ${activeHover?.nodeId === "down" && activeHover.part === "result" ? "is-active" : ""}`}
-                    onMouseEnter={interactive ? () => setActiveHover({ nodeId: "down", part: "result" }) : undefined}
-                  >
-                    {nodes.find(n => n.key === "down")?.value}
-                  </div>
-                  <div className="tv-fraction-bottom">
-                    {(() => {
-                      const pair = nodes.find(n => n.key === "down")?.pairText ?? "";
-                      if (pair.length !== 2) return pair;
-                      const a = pair[0];
-                      const b = pair[1];
-                      return (
-                        <>
-                          <span
-                            className={activeHover?.nodeId === "down" && activeHover.part === "a" ? "is-active" : ""}
-                            onMouseEnter={interactive ? () => setActiveHover({ nodeId: "down", part: "a" }) : undefined}
-                          >
-                            {a}
-                          </span>
-                          <span
-                            className={activeHover?.nodeId === "down" && activeHover.part === "b" ? "is-active" : ""}
-                            onMouseEnter={interactive ? () => setActiveHover({ nodeId: "down", part: "b" }) : undefined}
-                          >
-                            {b}
-                          </span>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
+                {renderFractionPair(
+                  "down",
+                  nodes.find((n) => n.key === "down")?.value ?? 0,
+                  nodes.find((n) => n.key === "down")?.pairText ?? "",
+                )}
               </div>
             )}
 
           </div>
         </div>
-
-        {interactive ? (
-          <div className="tv-preview-card">
-            {activeDetail ? (
-              (() => {
-                const which = activeHover?.part ?? "result";
-                let detail: VisualPairDetail = activeDetail;
-                if (which !== "result") {
-                  if (activeHover?.nodeId === "ol") {
-                    detail = outer_left[which === "a" ? 0 : 1] ?? activeDetail;
-                  } else if (activeHover?.nodeId === "or") {
-                    detail = outer_right[which === "a" ? 0 : 1] ?? activeDetail;
-                  } else if (activeHover?.nodeId === "down") {
-                    detail = top_cross[which === "a" ? 0 : 1] ?? activeDetail;
-                  }
-                }
-                const record = detail.result_record;
-                return (
-                  <>
-                    <div className="tv-preview-head">
-                      <div className="tv-preview-badge">{detail.result_digit} 图</div>
-                      <div className="tv-preview-pair">
-                        {detail.source_pair} = {detail.result_digit}
-                      </div>
-                    </div>
-
-                    <div className="tv-preview-core">
-                      <span className="tv-preview-label">组合核心：</span>
-                      {compactLabels(detail.digit_labels).join(" / ") || (detail.in_chart ? "" : "未单列")}
-                    </div>
-
-                    <div className="tv-preview-meaning">
-                      <span className="tv-preview-label">组合含义：</span>
-                    </div>
-                    <ul className="tv-preview-traits">
-                      {(detail.traits.length > 0 ? detail.traits : detail.lines)
-                        .slice(0, 3)
-                        .map((line, index) => (
-                          <li key={`${detail.id}-${index}`}>{line}</li>
-                        ))}
-                    </ul>
-
-                    {record ? (
-                      <div className="tv-preview-single">
-                        <div className="tv-preview-core" style={{ marginTop: "12px" }}>
-                          <div style={{ marginBottom: "6px" }}>
-                            <span className="tv-preview-label">来源算式：</span>
-                            {formatSourceEquation(detail)} = {detail.result_digit}
-                          </div>
-                          <span className="tv-preview-label">单数字 {detail.result_digit} 核心：</span>
-                          {(record.labels || []).join(" / ")}
-                        </div>
-                        <ul className="tv-preview-traits">
-                          {(record.lines || []).slice(0, 4).map((line, index) => (
-                            <li key={`res-${detail.id}-${index}`}>{line.replace(/^(阳面：|阴面：)/, "")}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </>
-                );
-              })()
-            ) : (
-              <div className="tv-preview-empty">
-                {locale === "zh"
-                  ? "悬停任一数字，查看它由哪两个数字相加而来，以及对应含义。"
-                  : "Hover any node to inspect its source pair and meaning."}
-              </div>
-            )}
-          </div>
-        ) : null}
       </div>
     </div>
   );

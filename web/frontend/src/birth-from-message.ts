@@ -47,6 +47,83 @@ const CN_DIGIT: Record<string, number> = {
   十: 10,
 };
 
+/** 口播逐字读数字：一九八八 → 1988，零九二六 → 0926 */
+function cnSingleDigitsToString(s: string): string | null {
+  let out = "";
+  for (const c of s) {
+    if (c === "零" || c === "〇") {
+      out += "0";
+      continue;
+    }
+    const n = CN_DIGIT[c];
+    if (n === undefined || n > 9) return null;
+    out += String(n);
+  }
+  return out || null;
+}
+
+function cnSingleDigitsToYear(s: string): number | null {
+  const digits = cnSingleDigitsToString(s);
+  if (!digits) return null;
+  let y = Number(digits);
+  if (digits.length === 2) y += 1900;
+  if (y >= 1900 && y <= 2100) return y;
+  if (y >= 0 && y <= 99) return y + 1900;
+  return null;
+}
+
+/** 口播月日：零九二六 → 9/26；九月初六、九月二十六 等 */
+function parseLunarMonthDayFromCn(s: string): { month: number; d: number } | null {
+  const t = s.trim();
+  if (!t) return null;
+
+  const named = t.match(
+    /^(闰)?\s*([正一二三四五六七八九十冬腊\d]+)\s*月\s*(初?[初廿卅\d一二三四五六七八九十]+)\s*[日号]?$/,
+  );
+  if (named) {
+    const month = parseLunarMonthToken(named[2], Boolean(named[1]));
+    const d = parseLunarDayToken(named[3]);
+    if (month != null && d != null && d >= 1 && d <= 30) return { month, d };
+  }
+
+  const digits = cnSingleDigitsToString(t.replace(/[月日号]/g, ""));
+  if (!digits) return null;
+  if (digits.length === 4) {
+    const month = Number(digits.slice(0, 2));
+    const d = Number(digits.slice(2, 4));
+    if (month >= 1 && month <= 12 && d >= 1 && d <= 30) return { month, d };
+  }
+  if (digits.length === 3) {
+    const month = Number(digits.slice(0, 1));
+    const d = Number(digits.slice(1, 3));
+    if (month >= 1 && month <= 12 && d >= 1 && d <= 30) return { month, d };
+  }
+  return null;
+}
+
+/** 阴历一九八八零九二六、一九八八年九月初六 等语音连读 */
+function extractCnNumeralLunarParts(text: string): { y: number; month: number; d: number } | null {
+  let t = text.replace(/(阴历|农历|\blunar\b)/gi, " ");
+  t = t.replace(/(阳历|公历|西历|\bsolar\b|\bgregorian\b)/gi, " ");
+  t = t.replace(/[\s,，。、]/g, "");
+
+  const withYear = t.match(/^([零一二三四五六七八九十〇]{4})\s*年\s*(.+)$/);
+  if (withYear) {
+    const y = cnSingleDigitsToYear(withYear[1]);
+    const md = parseLunarMonthDayFromCn(withYear[2]);
+    if (y && md) return { y, month: md.month, d: md.d };
+  }
+
+  const run = t.match(/[零一二三四五六七八九十〇]{6,}/);
+  if (!run) return null;
+  const s = run[0];
+  const y = cnSingleDigitsToYear(s.slice(0, 4));
+  if (!y) return null;
+  const md = parseLunarMonthDayFromCn(s.slice(4));
+  if (!md) return null;
+  return { y, month: md.month, d: md.d };
+}
+
 function parseCnNumber(s: string): number | null {
   const t = s.trim();
   if (!t) return null;
@@ -141,7 +218,7 @@ function extractLunarParts(text: string): { y: number; month: number; d: number 
     if (month != null && d != null && d >= 1 && d <= 30) return { y: Number(m[1]), month, d };
   }
 
-  return null;
+  return extractCnNumeralLunarParts(text);
 }
 
 function extractSolarIso(text: string): string | null {
@@ -157,6 +234,9 @@ function extractSolarIso(text: string): string | null {
   if (m) return formatIso(Number(m[1]), Number(m[2]), Number(m[3]));
   m = t.match(/\b(\d{4})\s+(\d{1,2})\s+(\d{1,2})\b/);
   if (m) return formatIso(Number(m[1]), Number(m[2]), Number(m[3]));
+
+  const cn = extractCnNumeralLunarParts(t);
+  if (cn) return formatIso(cn.y, cn.month, cn.d);
   return null;
 }
 

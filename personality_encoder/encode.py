@@ -46,7 +46,10 @@ def get_keyword_for_pair(kn: dict, a: int, b: int, root: int) -> str:
 
 
 def add_nine(a: int, b: int) -> int:
-    """两位数字相加后的九进制归约（等价于反复数位和直至 1–9）。"""
+    """两位数字相加后的九进制归约（等价于反复数位和直至 1–9）。
+    教案特例：两格均为占位 0 时，0+0 → 5（非数位根 0）。"""
+    if a == 0 and b == 0:
+        return 5
     return digital_root(a + b)
 
 
@@ -187,7 +190,7 @@ def pair_key(a: int, b: int) -> str:
 
 
 def pair_root(a: int, b: int) -> int:
-    return digital_root(a + b)
+    return add_nine(a, b)
 
 
 def load_knowledge(path: Path) -> dict:
@@ -930,7 +933,7 @@ def build_web_payload(y: int, m: int, d: int, kn: dict, *, locale: str = "zh") -
         )
 
     return {
-        "encode_schema_version": 2,
+        "encode_schema_version": 3,
         "birth": {"y": y, "m": m, "d": d},
         "triangle": {
             "boxes8": list(tr.boxes8),

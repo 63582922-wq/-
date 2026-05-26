@@ -53,7 +53,7 @@ from personality_encoder.encode import (
 KNOWLEDGE_PATH = ROOT / "personality_encoder" / "knowledge.json"
 
 # 用于自检：若 GET /api/status 的 build_mark 不是此值，说明浏览器连上的仍是旧进程或未部署新代码。
-API_BUILD_MARK = "reply-source-v10"
+API_BUILD_MARK = "ios-theater-v1"
 
 app = FastAPI(title="性格编码智能体", version="1.0.0")
 
@@ -167,6 +167,19 @@ class ChatResponse(BaseModel):
         None,
         description="仅成功走模型时返回：elapsed_seconds、model、api_host（便于核对确实请求过大模型）",
     )
+
+class IOSChatBody(BaseModel):
+    birth_date: str = Field(..., description='YYYY-MM-DD')
+    message: str = Field(..., description='格式 "标签:xxx, 内容:xxxx"')
+    short_term_memory: Optional[str] = Field(
+        default="",
+        description="可选：最近 3 条切片的精简记忆文本（客户端本地打捞后注入），仅供模型内部推理",
+    )
+
+
+class IOSChatResponse(BaseModel):
+    reply: str
+    payload: Dict[str, Any]
 
 
 def _payload_for_chat_client(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -310,8 +323,57 @@ def compute_only(body: ChatBody):
     return ComputeResponse(payload=_payload_for_chat_client(payload))
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-def chat(body: ChatBody, response: Response):
+@app.post("/api/chat", response_model=IOSChatResponse)
+def chat_ios(body: IOSChatBody, response: Response):
+    loc = "zh"
+    try:
+        y, m, d = parse_date(body.birth_date.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    payload = build_web_payload(y, m, d, _knowledge(), locale=loc)
+    try:
+        from personality_encoder.ai_narrative import (
+            MissingAiApiKeyError,
+            generate_mobile_theater_reply,
+        )
+
+        t0 = time.perf_counter()
+        raw_reply = generate_mobile_theater_reply(
+            payload,
+            body.message,
+            short_term_memory=(body.short_term_memory or "").strip(),
+        )
+        elapsed = time.perf_counter() - t0
+        model_name = os.environ.get("PERSONALITY_AI_MODEL", "gpt-4o-mini")
+        logger.info(
+            "chat_ios reply_source=model birth=%s elapsed=%.2fs chars=%s model=%s host=%s",
+            payload.get("birth"),
+            elapsed,
+            len(raw_reply),
+            model_name,
+            _api_host_hint(),
+        )
+        response.headers["X-Reply-Source"] = "model"
+        return IOSChatResponse(reply=raw_reply, payload=payload)
+    except MissingAiApiKeyError:
+        response.headers["X-Reply-Source"] = "no_key"
+        raw_reply = (
+            "PAST: 你别把今天当成审判日，先把那点劲儿用在一件小事上：把“标签”对应的第一步做完就行，别在脑内打仗。\n"
+            "FUTURE: 你不是缺能力，你是把自尊当护城河。现在停下内耗，选一个最小动作立刻执行，否则你会把一生都耗在“准备开始”。"
+        )
+        return IOSChatResponse(reply=raw_reply, payload=payload)
+    except Exception:
+        logger.exception("chat_ios failed")
+        response.headers["X-Reply-Source"] = "upstream_error"
+        raw_reply = (
+            "PAST: 信号不稳也别怂，你就当这是宇宙给你的暂停键：先把今天这句写完整，再做一件 2 分钟就能完成的小动作。\n"
+            "FUTURE: 别等完美接口，现实从不等你。把今天的内容落地成一个可交付的动作，现在就去做。"
+        )
+        return IOSChatResponse(reply=raw_reply, payload=payload)
+
+
+@app.post("/api/chat-web", response_model=ChatResponse)
+def chat_web(body: ChatBody, response: Response):
     loc = _api_locale(body.locale)
     try:
         y, m, d = _resolve_date(body.message, body.birth_date, locale=loc)
@@ -353,7 +415,7 @@ def chat(body: ChatBody, response: Response):
         elapsed = time.perf_counter() - t0
         model_name = os.environ.get("PERSONALITY_AI_MODEL", "gpt-4o-mini")
         logger.info(
-            "chat reply_source=model birth=%s followup=%s history_turns=%s elapsed=%.2fs chars=%s model=%s host=%s",
+            "chat_web reply_source=model birth=%s followup=%s history_turns=%s elapsed=%.2fs chars=%s model=%s host=%s",
             payload.get("birth"),
             use_followup,
             len(hist),
@@ -364,7 +426,7 @@ def chat(body: ChatBody, response: Response):
         )
     except MissingAiApiKeyError:
         logger.warning(
-            "chat aborted: missing AI API key (set OPENAI_API_KEY in repo root .env and restart)"
+            "chat_web aborted: missing AI API key (set OPENAI_API_KEY in repo root .env and restart)"
         )
         response.headers["X-Reply-Source"] = "no_key"
         return ChatResponse(

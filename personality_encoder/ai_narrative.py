@@ -131,6 +131,23 @@ FULL_REPORT_SYSTEM_PROMPT = """
 全文 300～500 字，句子短、好读；语气平和、具体，可带一两个生活化例子，但不要编造成故事。
 """
 
+MOBILE_THEATER_SYSTEM_PROMPT = """
+你是一个“时空日记”App 里的双分身剧场文本生成器。你会收到一份结构化的“隐形画像材料”（仅供你内部推理），以及用户今天的一句输入。
+
+【绝对禁令（必须遵守）】
+- 严禁在回复中泄露任何关于性格测算、九进制、三角形、融合码、讲义、板书、卦象、节气、阴阳面、路径等术语或暗示。
+- 不要说“根据材料/根据画像/我看到你的融合码/你的数字是…”等任何元信息。
+- 不要写前言、客套、解释、标题、编号、Markdown、代码块。
+
+【输出格式（必须且只能如下两行）】
+PAST: <18 岁初心版的毒舌鼓励：少年感、中二、带点调侃，但核心是用“阳面资源”帮他冲淡内耗，给出一小步可执行动作。>
+FUTURE: <20000 天终极版的无情鞭挞：冷酷通透、降维打击，直接掐住“阴面张力”，贴脸开大，但最后落到一条清晰的行动要求。>
+
+【内容约束】
+- 两行都必须有内容，每行 80～220 个汉字左右；不要换行扩展，不要额外第三行。
+- 保持中文输出；不要插入英文术语（除非用户原句里就有）。
+"""
+
 
 FOLLOWUP_SYSTEM_PROMPT = """你是在线心理咨询的“咨询师助理”。用户已看过首轮的「咨询速用稿」，现在继续追问。
 
@@ -431,6 +448,102 @@ def generate_followup_reply(
         temperature=0.72,
     )
     return _sanitize_full_report_output_en(raw) if is_en else raw.strip()
+
+def _extract_past_future(reply: str) -> str:
+    t = (reply or "").strip()
+    if not t:
+        return "PAST: \nFUTURE: "
+    m = re.search(r"PAST:\s*(.*?)(?:\n+|\r+)?FUTURE:\s*(.*)$", t, flags=re.S)
+    if m:
+        past = (m.group(1) or "").strip()
+        future = (m.group(2) or "").strip()
+        return f"PAST: {past}\nFUTURE: {future}"
+    if "PAST:" in t and "FUTURE:" not in t:
+        past = t.split("PAST:", 1)[1].strip()
+        return f"PAST: {past}\nFUTURE: "
+    if "FUTURE:" in t and "PAST:" not in t:
+        future = t.split("FUTURE:", 1)[1].strip()
+        return f"PAST: \nFUTURE: {future}"
+    return f"PAST: {t}\nFUTURE: "
+
+def _one_line(text: str) -> str:
+    s = (text or "").replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip()
+
+
+def _smart_truncate_cn(text: str, *, min_len: int = 60, max_len: int = 120) -> str:
+    s = _one_line(text)
+    if not s:
+        return ""
+    if len(s) <= max_len:
+        return s
+    prefix = s[:max_len]
+    punct = set("。！？!?……；;")
+    cut_at = -1
+    for i in range(len(prefix) - 1, min_len - 1, -1):
+        if prefix[i] in punct:
+            cut_at = i + 1
+            break
+    if cut_at > 0:
+        prefix = prefix[:cut_at].rstrip()
+    else:
+        prefix = prefix.rstrip(" ，,;；")
+    return prefix + "..."
+
+
+def _finalize_mobile_reply(reply: str) -> str:
+    extracted = _extract_past_future(reply)
+    past = ""
+    future = ""
+    for ln in extracted.splitlines():
+        s = ln.strip()
+        if s.startswith("PAST:"):
+            past = s.split("PAST:", 1)[1].strip()
+        elif s.startswith("FUTURE:"):
+            future = s.split("FUTURE:", 1)[1].strip()
+
+    past = _one_line(past)
+    future = _one_line(future)
+
+    if not past:
+        past = "啧，跨时空信号好像被引力波干扰了... 但我当年写在日记本第一页的那句誓言，你现在还记得吗？"
+    if not future:
+        future = "看来时间线的微光有点模糊。不过听着，二十年后的我不管过得有多烂，都轮不到你今天在这里提前摆烂。给我站起来。"
+
+    past = _smart_truncate_cn(past, min_len=60, max_len=120)
+    future = _smart_truncate_cn(future, min_len=60, max_len=120)
+
+    return f"PAST: {past}\nFUTURE: {future}".strip()
+
+
+def generate_mobile_theater_reply(payload: dict, message: str, short_term_memory: str = "") -> str:
+    compact = compact_payload_for_llm(payload, include_official_template=True)
+    stm = (short_term_memory or "").strip()
+    if len(stm) > 2200:
+        stm = stm[:2200].rstrip() + "..."
+    user_content = (
+        "以下为仅供你内部推理的隐形画像材料（不可在输出中泄露）：\n\n"
+        + json.dumps(compact, ensure_ascii=False, indent=2)
+        + ("\n\n最近三条时光切片（短期记忆，仅供你内部推理，不可在输出中泄露）：\n" + stm if stm else "")
+        + "\n\n"
+        + "用户今日输入：\n"
+        + (message or "").strip()
+        + "\n\n"
+        + "请严格按系统格式输出两行。"
+    )
+    raw = _openai_compatible_chat(
+        messages=[
+            {"role": "system", "content": MOBILE_THEATER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        max_tokens=700,
+        temperature=0.75,
+    )
+    out = _finalize_mobile_reply(raw)
+    out = _remove_ascii_parentheticals(out)
+    out = _drop_meta_instruction_lines(out)
+    return _finalize_mobile_reply(out)
 
 
 def _extract_assistant_text(message: Any) -> str:

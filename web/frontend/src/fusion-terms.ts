@@ -10,7 +10,7 @@
  * 外圈点分母：展示该「质位数字」由上一步如何融合而来（仍为本步的质·形·特征，名称不变）。
  */
 
-export const FUSION_ENCODE_SCHEMA_VERSION = 2;
+export const FUSION_ENCODE_SCHEMA_VERSION = 3;
 
 export type FusionLocale = "zh" | "en";
 
